@@ -915,33 +915,76 @@ static void game_free_drawstate(drawing *dr, game_drawstate *ds)
     sfree(ds);
 }
 
+/*
+ * Fifteen's own drawing of each board element, used when the front
+ * end doesn't draw it with draw_element().
+ */
+static void fifteen_default_board(drawing *dr, game_drawstate *ds,
+                                  const game_state *state)
+{
+    int coords[10];
+
+    coords[0] = COORD(state->w) + HIGHLIGHT_WIDTH - 1;
+    coords[1] = COORD(state->h) + HIGHLIGHT_WIDTH - 1;
+    coords[2] = COORD(state->w) + HIGHLIGHT_WIDTH - 1;
+    coords[3] = COORD(0) - HIGHLIGHT_WIDTH;
+    coords[4] = coords[2] - TILE_SIZE;
+    coords[5] = coords[3] + TILE_SIZE;
+    coords[8] = COORD(0) - HIGHLIGHT_WIDTH;
+    coords[9] = COORD(state->h) + HIGHLIGHT_WIDTH - 1;
+    coords[6] = coords[8] + TILE_SIZE;
+    coords[7] = coords[9] - TILE_SIZE;
+    draw_polygon(dr, coords, 5, COL_HIGHLIGHT, COL_HIGHLIGHT);
+
+    coords[1] = COORD(0) - HIGHLIGHT_WIDTH;
+    coords[0] = COORD(0) - HIGHLIGHT_WIDTH;
+    draw_polygon(dr, coords, 5, COL_LOWLIGHT, COL_LOWLIGHT);
+}
+
+static void fifteen_default_space(drawing *dr, game_drawstate *ds,
+                                  int x, int y, int flash_colour)
+{
+    draw_rect(dr, x, y, TILE_SIZE, TILE_SIZE,
+              flash_colour);
+}
+
+static void fifteen_default_tile(drawing *dr, game_drawstate *ds,
+                                 int x, int y, int flash_colour)
+{
+    int coords[6];
+
+    coords[0] = x + TILE_SIZE - 1;
+    coords[1] = y + TILE_SIZE - 1;
+    coords[2] = x + TILE_SIZE - 1;
+    coords[3] = y;
+    coords[4] = x;
+    coords[5] = y + TILE_SIZE - 1;
+    draw_polygon(dr, coords, 3, COL_LOWLIGHT, COL_LOWLIGHT);
+
+    coords[0] = x;
+    coords[1] = y;
+    draw_polygon(dr, coords, 3, COL_HIGHLIGHT, COL_HIGHLIGHT);
+
+    draw_rect(dr, x + HIGHLIGHT_WIDTH, y + HIGHLIGHT_WIDTH,
+              TILE_SIZE - 2*HIGHLIGHT_WIDTH, TILE_SIZE - 2*HIGHLIGHT_WIDTH,
+              flash_colour);
+}
+
 static void draw_tile(drawing *dr, game_drawstate *ds, const game_state *state,
                       int x, int y, int tile, int flash_colour)
 {
     if (tile == 0) {
-        draw_rect(dr, x, y, TILE_SIZE, TILE_SIZE,
-                  flash_colour);
+        if (!draw_element(dr, ELEMENT_SPACE, 0, 0, NULL,
+                          x, y, TILE_SIZE, TILE_SIZE, flash_colour))
+            fifteen_default_space(dr, ds, x, y, flash_colour);
     } else {
-        int coords[6];
         char str[40];
 
-        coords[0] = x + TILE_SIZE - 1;
-        coords[1] = y + TILE_SIZE - 1;
-        coords[2] = x + TILE_SIZE - 1;
-        coords[3] = y;
-        coords[4] = x;
-        coords[5] = y + TILE_SIZE - 1;
-        draw_polygon(dr, coords, 3, COL_LOWLIGHT, COL_LOWLIGHT);
-
-        coords[0] = x;
-        coords[1] = y;
-        draw_polygon(dr, coords, 3, COL_HIGHLIGHT, COL_HIGHLIGHT);
-
-        draw_rect(dr, x + HIGHLIGHT_WIDTH, y + HIGHLIGHT_WIDTH,
-                  TILE_SIZE - 2*HIGHLIGHT_WIDTH, TILE_SIZE - 2*HIGHLIGHT_WIDTH,
-                  flash_colour);
-
         sprintf(str, "%d", tile);
+        if (!draw_element(dr, ELEMENT_TILE, 0, tile, str,
+                          x, y, TILE_SIZE, TILE_SIZE, flash_colour))
+            fifteen_default_tile(dr, ds, x, y, flash_colour);
+
         draw_text(dr, x + TILE_SIZE/2, y + TILE_SIZE/2,
                   FONT_VARIABLE, TILE_SIZE/3, ALIGN_VCENTRE | ALIGN_HCENTRE,
                   COL_TEXT, str);
@@ -963,26 +1006,15 @@ static void game_redraw(drawing *dr, game_drawstate *ds,
         bgcolour = COL_BACKGROUND;
 
     if (!ds->started) {
-        int coords[10];
-
         /*
          * Recessed area containing the whole puzzle.
          */
-        coords[0] = COORD(state->w) + HIGHLIGHT_WIDTH - 1;
-        coords[1] = COORD(state->h) + HIGHLIGHT_WIDTH - 1;
-        coords[2] = COORD(state->w) + HIGHLIGHT_WIDTH - 1;
-        coords[3] = COORD(0) - HIGHLIGHT_WIDTH;
-        coords[4] = coords[2] - TILE_SIZE;
-        coords[5] = coords[3] + TILE_SIZE;
-        coords[8] = COORD(0) - HIGHLIGHT_WIDTH;
-        coords[9] = COORD(state->h) + HIGHLIGHT_WIDTH - 1;
-        coords[6] = coords[8] + TILE_SIZE;
-        coords[7] = coords[9] - TILE_SIZE;
-        draw_polygon(dr, coords, 5, COL_HIGHLIGHT, COL_HIGHLIGHT);
-
-        coords[1] = COORD(0) - HIGHLIGHT_WIDTH;
-        coords[0] = COORD(0) - HIGHLIGHT_WIDTH;
-        draw_polygon(dr, coords, 5, COL_LOWLIGHT, COL_LOWLIGHT);
+        if (!draw_element(dr, ELEMENT_BOARD, 0, 0, NULL,
+                          COORD(0) - HIGHLIGHT_WIDTH, COORD(0) - HIGHLIGHT_WIDTH,
+                          state->w * TILE_SIZE + 2*HIGHLIGHT_WIDTH,
+                          state->h * TILE_SIZE + 2*HIGHLIGHT_WIDTH,
+                          COL_BACKGROUND))
+            fifteen_default_board(dr, ds, state);
 
         ds->started = true;
     }
