@@ -936,6 +936,12 @@ void midend_stop_anim(midend *me)
     }
 }
 
+bool midend_is_animating(midend *me)
+{
+    /* The same test midend_redraw() uses to draw an animation frame. */
+    return me->oldstate && me->anim_time > 0;
+}
+
 void midend_restart_game(midend *me)
 {
     game_state *s;

@@ -2316,6 +2316,155 @@ This function may be used for both drawing and printing.
 If the specified thickness is less than 1.0, 1.0 is used.
 This ensures that thin lines are visible even at small scales.
 
+\S{drawing-draw-element} \cw{draw_element()}
+
+\c bool draw_element(drawing *dr, int kind, unsigned int flags, int id,
+\c                   const char *label, int x, int y, int w, int h,
+\c                   int colour);
+
+Tells the front end that a \e{board element} is being drawn: a
+recognisable part of the puzzle such as the board itself, an empty
+space on it, or a tile. It says what the element is, which one it is,
+what it shows and where it is, and asks the front end to draw it in
+its own style. Returns \cw{true} if the front end drew the element,
+and \cw{false} if it did not, in which case nothing at all has been
+drawn and the back end must draw the element itself.
+
+The main purpose of this function is accessibility. Pixels say
+nothing to a screen reader, but a front end which knows that the
+board is a grid of tiles, which tile is where and what each one
+shows can present the board to assistive technology as a set of
+labelled controls, and can tell the player what a move changed. The
+element's kind, id and label, and the identity rules in
+\k{drawing-draw-element-identity}, exist to make that possible. A
+second purpose is letting a front end draw elements in a style which
+matches its platform.
+
+So this function is always called with a fallback, in this form:
+
+\c if (!draw_element(dr, ELEMENT_TILE, 0, number, text,
+\c                   x, y, w, h, colour))
+\c     draw_my_own_tile(dr, ...);
+
+Front ends are not required to implement this function, and most do
+not; even one that does may decline to draw any particular element,
+and may still have recorded it. With the fallback, a puzzle looks
+exactly as it always has on those front ends.
+
+\c{kind} says what the element is. It is one of:
+
+\dt \cw{ELEMENT_BOARD}
+
+\dd The board and its frame. The rectangle is the outer edge of the
+frame the back end would otherwise draw.
+
+\dt \cw{ELEMENT_SPACE}
+
+\dd An empty place on the board where a tile could be.
+
+\dt \cw{ELEMENT_TILE}
+
+\dd A piece which sits on the board.
+
+\c{flags} is a bitmask describing the element's state. No flags are
+defined yet, so it should always be 0.
+
+\c{id} is the back end's own number for this particular element (for
+example, the number on a tile), or 0 if it has none. Together with
+\c{kind}, it identifies the element, as described in
+\k{drawing-draw-element-identity}. It has no other meaning: the front
+end should not try to read anything else from it.
+
+\c{label} is the short text a person would read off the element,
+such as \cw{"7"} for a tile showing the number 7, or \cw{NULL} if the
+element shows nothing (as for an empty space, or a plain board). It
+is what the element shows, and never a sentence: it says nothing of
+the element's position, its kind or what can be done with it, which
+the front end works out for itself. It is plain text, in the same
+encoding as \cw{draw_text()}, and is valid only for the duration of
+the call, so a front end which wants to keep it must copy it. The
+label changes no pixels: the back end still draws any text on the
+element itself, whatever this function returns.
+
+\c{x}, \c{y}, \c{w} and \c{h} give the element's rectangle, which
+should be exactly the area the back end's own drawing of the element
+would have covered. The front end paints every pixel of that
+rectangle and nothing outside it, so the back end can treat the call
+like a \cw{draw_rect()} of that area when it comes to \cw{clip()},
+blitters and \cw{draw_update()}.
+
+\c{colour} is the colour the back end would have used for the body of
+the element. Pass the colour you would really have used at that
+moment, such as a flash colour during a completion flash, because it
+can carry meaning. The front end chooses every other colour of the
+element (edges, highlights, shadows) itself.
+
+This function only draws the element. The back end still draws
+anything which appears on top of it (such as the number on a tile),
+and still calls \cw{draw_update()} for the area.
+
+This function is used for drawing only. Since no printing
+implementation provides it, back ends need not avoid calling it
+while printing: they will simply receive \cw{false} and fall back.
+
+\S2{drawing-draw-element-identity} Identity of board elements
+
+A front end may build a model of the board from these calls alone:
+which elements are on it, where each one is and what it shows. For
+that model to be accurate, a back end calling \cw{draw_element()}
+must keep to the following rules.
+
+\dt At rest only
+
+\dd The rules below describe the board when no move animation is
+pending. Calls made while drawing the frames of a move animation may
+show the board in between (for example, Fifteen blanks every square
+a move changes as an empty space with id 0, then draws the moving
+tiles part way across), and carry no guarantee of identity. A
+completion flash moves nothing, so it counts as at rest. A front end
+can ask whether a move animation is pending with
+\cw{midend_is_animating()} (\k{midend-is-animating}).
+
+\dt Identity
+
+\dd An element is identified by its \c{kind} and \c{id} together.
+The same thing on the board keeps the same id across redraws, for as
+long as it exists, wherever it moves. Two elements of the same kind
+present at the same time have different ids. An id of 0 is allowed
+for a kind which only ever has one element at a time.
+
+\dt The board starts a board
+
+\dd A call for an \cw{ELEMENT_BOARD} element begins a new board:
+every other element recorded before it no longer exists. A back end
+sends the board element only when it starts a full redraw, such as
+the first redraw with a new drawstate.
+
+\dt Latest call wins
+
+\dd Each call gives the element's current rectangle, label and
+colour, replacing whatever an earlier call for the same element
+said.
+
+\dt Covered means gone
+
+\dd An element whose rectangle is completely covered by the
+rectangle of a later call for a different element no longer exists.
+
+\dt Complete on a full redraw
+
+\dd After a redraw with a new drawstate, every element on the board
+has been sent at least once.
+
+\dt Record without drawing
+
+\dd The front end receives every call, even one it declines by
+returning \cw{false}, so it may record calls (for example, for
+accessibility) whether or not it draws them. A back end must
+therefore call \cw{draw_element()} for every element it draws, and
+never draw an element with its own fallback without calling it
+first.
+
 \S{drawing-draw-text} \cw{draw_text()}
 
 \c void draw_text(drawing *dr, int x, int y, int fonttype,
@@ -2827,6 +2976,89 @@ An implementation of this API which doesn't provide high-quality
 rendering of thick lines is permitted to define this function
 pointer to be \cw{NULL}. The middleware in \cw{drawing.c} will notice
 and provide a low-quality alternative using \cw{draw_polygon()}.
+
+\S{drawingapi-draw-element} \cw{draw_element()}
+
+\c bool (*draw_element)(drawing *dr, int kind, unsigned int flags,
+\c                      int id, const char *label,
+\c                      int x, int y, int w, int h, int colour);
+
+This function behaves exactly like the back end \cw{draw_element()}
+function; see \k{drawing-draw-element}.
+
+Its main purpose is accessibility: from these calls alone, a front
+end can keep an accurate model of the board, and present it to
+assistive technology as labelled elements, whether it draws them
+itself or not. Drawing elements in the front end's own style is a
+second purpose. The model rests on these rules, set out in full in
+\k{drawing-draw-element-identity}:
+
+\b \e{At rest only:} the rules hold when no move animation is
+pending. Calls made while drawing animation frames may show the
+board in between, and carry no guarantee of identity, so a front end
+should only rely on its model once the midend has no animation
+pending (\k{midend-is-animating}).
+
+\b \e{Identity:} an element is identified by \c{kind} and \c{id}
+together. The same thing on the board keeps the same id across
+redraws; two elements of the same kind present at once have
+different ids; id 0 is allowed for a kind with only one element at a
+time.
+
+\b \e{The board starts a board:} a call for \cw{ELEMENT_BOARD}
+begins a new board, and every other element recorded before it no
+longer exists. A back end sends it only when it starts a full redraw.
+
+\b \e{Latest call wins:} each call gives the element's current
+rectangle, label and colour.
+
+\b \e{Covered means gone:} an element whose rectangle is completely
+covered by a later call for a different element no longer exists.
+
+\b \e{Complete on a full redraw:} after a redraw with a new
+drawstate, every element on the board has been sent at least once.
+
+\b \e{Record without drawing:} the front end receives every call
+even when it returns \cw{false}, and may record calls (for example,
+for accessibility) whether or not it draws them.
+
+\c{label} is the short plain text a person would read off the
+element, such as \cw{"7"}, or \cw{NULL} if it shows nothing. It is
+never a sentence, and is valid only for the duration of the call, so
+a front end which keeps it must copy it. It changes no pixels: the
+back end draws the element's text itself.
+
+This function is optional. An implementation of this API which does
+not want to draw board elements in its own style should define this
+function pointer to be \cw{NULL}. As it is the last field of the
+structure, a front end written before it existed leaves it out of
+its initialiser, which sets it to \cw{NULL}, and needs no change. The middleware in \cw{drawing.c}
+will then return \cw{false} to the back end, which draws the element
+itself as it always has.
+
+An implementation which does provide this function must return
+\cw{false}, having drawn nothing, for any element it does not want to
+draw: in particular for any \c{kind} it does not recognise, and for
+any state, \c{id} or size it chooses not to handle. The back end then
+draws the element itself. It should ignore any bits of \c{flags} it
+does not recognise, and draw the element as if they were not set.
+
+When it returns \cw{true}, it must have drawn only inside the
+rectangle (\c{x}, \c{y}, \c{w}, \c{h}), and it must have painted
+every pixel of that rectangle. This keeps incremental redrawing,
+\cw{clip()}, blitters and animation correct. If the element has a
+shape which does not fill its rectangle, such as rounded corners, the
+front end fills the pixels outside the shape itself: for a space or a
+tile, with the board surface as it would draw a space with the same
+\c{colour}; for the board, with colour 0, the background the window
+is cleared to.
+
+\c{colour} is the back end's choice of colour for the element's body,
+and may carry meaning (such as a flash). The front end may draw the
+body in that colour or map it to a colour of its own, but should not
+rely on the puzzle's other colours (such as highlight and lowlight
+colours used to draw bevels) to give the element depth: it chooses
+those itself.
 
 \S{drawingapi-draw-update} \cw{draw_update()}
 
@@ -3572,6 +3804,20 @@ called or \cw{activate_timer()} was invoked.
 One of the major purposes of timing in the mid-end is to perform
 move animation. Therefore, calling this function is very likely to
 result in calls back to the front end's drawing API.
+
+\H{midend-is-animating} \cw{midend_is_animating()}
+
+\c bool midend_is_animating(midend *me);
+
+Returns \cw{true} while a move animation is pending: the mid-end will
+draw further frames of a move, through \cw{midend_timer()}
+(\k{midend-timer}), before the board reaches its new position. Returns
+\cw{false} once the move is finished, including while a completion
+flash is still being shown, since a flash moves nothing.
+
+A front end which keeps a model of the board from \cw{draw_element()}
+calls (\k{drawing-draw-element-identity}) can use this to tell when
+the board is at rest, and so when its model can be relied on.
 
 \H{midend-get-presets} \cw{midend_get_presets()}
 

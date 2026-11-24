@@ -164,6 +164,16 @@ void draw_update(drawing *dr, int x, int y, int w, int h)
 	dri->pub.api->draw_update(dr, x, y, w, h);
 }
 
+bool draw_element(drawing *dr, int kind, unsigned int flags, int id,
+                  const char *label, int x, int y, int w, int h, int colour)
+{
+    drawing_internal *dri = PRIVATE_CAST(dr);
+    if (!dri->pub.api->draw_element)
+        return false;
+    return dri->pub.api->draw_element(dr, kind, flags, id, label,
+                                      x, y, w, h, colour);
+}
+
 void clip(drawing *dr, int x, int y, int w, int h)
 {
     drawing_internal *dri = PRIVATE_CAST(dr);

@@ -24,6 +24,9 @@ void draw_line(drawing *dr, int x1, int y1, int x2, int y2, int colour) {}
 #endif
 void draw_thick_line(drawing *dr, float thickness,
 		     float x1, float y1, float x2, float y2, int colour) {}
+bool draw_element(drawing *dr, int kind, unsigned int flags, int id,
+                  const char *label, int x, int y, int w, int h,
+                  int colour) { return false; }
 void draw_polygon(drawing *dr, const int *coords, int npoints,
                   int fillcolour, int outlinecolour) {}
 void draw_circle(drawing *dr, int cx, int cy, int radius,

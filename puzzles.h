@@ -117,6 +117,11 @@ typedef struct psdata psdata;
 #define FONT_FIXED    0
 #define FONT_VARIABLE 1
 
+/* Element kinds for draw_element() */
+#define ELEMENT_BOARD 1                /* the board and its frame */
+#define ELEMENT_SPACE 2                /* an empty place for a tile */
+#define ELEMENT_TILE  3                /* a piece sitting on the board */
+
 /* For printing colours */
 #define HATCH_SLASH     1
 #define HATCH_BACKSLASH 2
@@ -275,6 +280,8 @@ void draw_circle(drawing *dr, int cx, int cy, int radius,
                  int fillcolour, int outlinecolour);
 void draw_thick_line(drawing *dr, float thickness,
 		     float x1, float y1, float x2, float y2, int colour);
+bool draw_element(drawing *dr, int kind, unsigned int flags, int id,
+                  const char *label, int x, int y, int w, int h, int colour);
 void clip(drawing *dr, int x, int y, int w, int h);
 void unclip(drawing *dr);
 void start_draw(drawing *dr);
@@ -321,6 +328,7 @@ void midend_reset_tilesize(midend *me);
 void midend_new_game(midend *me);
 void midend_restart_game(midend *me);
 void midend_stop_anim(midend *me);
+bool midend_is_animating(midend *me);
 enum { PKR_QUIT = 0, PKR_SOME_EFFECT, PKR_NO_EFFECT, PKR_UNUSED };
 int midend_process_key(midend *me, int x, int y, int button);
 key_label *midend_request_keys(midend *me, int *nkeys);
@@ -828,6 +836,9 @@ struct drawing_api {
     void (*draw_thick_line)(drawing *dr, float thickness,
 			    float x1, float y1, float x2, float y2,
 			    int colour);
+    bool (*draw_element)(drawing *dr, int kind, unsigned int flags, int id,
+                         const char *label, int x, int y, int w, int h,
+                         int colour);
 };
 
 /*
