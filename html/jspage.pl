@@ -289,6 +289,17 @@ main {
     margin-top: 0px;
 }
 
+#dlgform .colourrow {
+    display: flex;
+    align-items: center;
+    gap: 0.5em;
+    margin: 0.25em 0;
+}
+
+#dlgform .colourrow label {
+    min-width: 7em;
+}
+
 #resizehandle {
     position: absolute;
     z-index: 1;
@@ -349,6 +360,60 @@ main {
     color: transparent;
 }
 
+/* The page follows the board's Appearance. Under Dark, emccpre.js
+ * sets data-appearance="dark" on the root and --page-background to the
+ * board's Background, and these rules restyle what the rules above
+ * draw in light colours. Under Light, none of them apply. */
+:root[data-appearance=dark] {
+    color-scheme: dark;
+    background: var(--page-background, #1c1c1e);
+    color: #f2f2f7;
+}
+
+:root[data-appearance=dark] a:link {
+    color: #6cb4ff;
+}
+
+:root[data-appearance=dark] a:visited {
+    color: #c9a0ff;
+}
+
+:root[data-appearance=dark] #gamemenu li {
+    border-color: rgb(99,99,102);
+}
+
+:root[data-appearance=dark] #gamemenu ul ul {
+    background: #2c2c2e;
+}
+
+:root[data-appearance=dark] #gamemenu :disabled {
+    color: rgba(242,242,247,0.5);
+}
+
+:root[data-appearance=dark] #gamemenu li > :hover:not(:disabled),
+:root[data-appearance=dark] #gamemenu li > .focus-within {
+    background: rgba(255,255,255,0.2);
+}
+
+:root[data-appearance=dark] #gamemenu li > div:after {
+    content: url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='10'%20height='10'%3E%3Cpolygon%20fill='%23f2f2f7'%20points='0,5,10,5,5,10'/%3E%3C/svg%3E");
+}
+
+:root[data-appearance=dark] #gamemenu li li > div:after {
+    content: url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='10'%20height='10'%3E%3Cpolygon%20fill='%23f2f2f7'%20points='0,0,10,5,0,10'/%3E%3C/svg%3E");
+}
+
+:root[data-appearance=dark] #statusbar {
+    background: #3a3a3c;
+    border-color: #2c2c2e #48484a #48484a #2c2c2e;
+}
+
+:root[data-appearance=dark] #dlgform {
+    background: #2c2c2e;
+    color: #f2f2f7;
+    border-color: #f2f2f7;
+}
+
 #apology {
     padding: 0 1em 0 1em;
     margin: 1em;
@@ -381,6 +446,21 @@ ${unfinishedpara}
     <li><button type="button" id="save">Download save file...</button></li>
     <li><button type="button" id="load">Upload save file...</button></li>
     <li><button type="button" id="prefs">Preferences...</button></li>
+    <li><div tabindex="0">Board style<ul role="menu" id="boardstyle">
+      <li><label><input type="radio" class="tick" name="boardstyle"
+        value="modern"> Modern</label></li>
+      <li><label><input type="radio" class="tick" name="boardstyle"
+        value="classic"> Classic</label></li>
+    </ul></div></li>
+    <li><div tabindex="0">Appearance<ul role="menu" id="appearance">
+      <li><label><input type="radio" class="tick" name="appearance"
+        value="system"> System</label></li>
+      <li><label><input type="radio" class="tick" name="appearance"
+        value="light"> Light</label></li>
+      <li><label><input type="radio" class="tick" name="appearance"
+        value="dark"> Dark</label></li>
+    </ul></div></li>
+    <li><button type="button" id="colours">Colours...</button></li>
   </ul></div></li>
   <li><div tabindex="0">Type<ul role="menu" id="gametype"></ul></div></li>
   <li role="separator"></li>

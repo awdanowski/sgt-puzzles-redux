@@ -132,6 +132,10 @@ var blitters = new Map();
 var dlg_dimmer = null, dlg_form = null;
 var dlg_return_funcs = null;
 
+// The OK and Cancel functions the open dialog was launched with, if
+// any, which Return and Escape call too.
+var dlg_ok_function = null, dlg_cancel_function = null;
+
 // void dlg_return_sval(int index, const char *val);
 // void dlg_return_ival(int index, int val);
 //
@@ -171,6 +175,7 @@ var permalink_desc = document.getElementById("permalink-desc");
 var specific_button = document.getElementById("specific");
 var random_button = document.getElementById("random");
 var prefs_button = document.getElementById("prefs");
+var colours_button = document.getElementById("colours");
 var new_button = document.getElementById("new");
 var restart_button = document.getElementById("restart");
 var undo_button = document.getElementById("undo");
@@ -873,6 +878,619 @@ function board_moves(before, after) {
     return board_list(names) + " moved " + way + ".";
 }
 
+// The board style, and the Modern look of board elements. Under
+// Classic, every board element is declined, so the puzzle draws
+// exactly what it always has. Under Modern, the page draws a
+// puzzle's board elements itself, flat, in colours it chooses by the
+// element's kind, never by the puzzle's colour index, for the board's
+// appearance: light or dark, as the browser prefers or as the player
+// chooses. Both choices are the same for every puzzle on the site.
+var board_style = {
+    // "modern" or "classic".
+    style: "modern",
+    // "system" (follow prefers-color-scheme), "light" or "dark".
+    appearance: "system",
+    // Whether the puzzle has sent a board element yet. Until then,
+    // nothing tells us it has a board we can draw.
+    converted: false,
+    // Whether the latest fill of the whole canvas was in colour 0,
+    // because it came before we knew the puzzle was converted.
+    surround_stale: false,
+    // A restyle has been asked for and not yet run.
+    restyle_queued: false,
+    // This puzzle's Custom Colours, from custom_colours_parse(): for
+    // each appearance, the colours the player has replaced, by name,
+    // as #rrggbb.
+    custom: { light: {}, dark: {} }
+};
+var board_style_key = "puzzles board style";
+var board_appearance_key = "puzzles appearance";
+
+// Default element colours, as #rrggbb, by puzzle name, colour name,
+// appearance ("light" or "dark") and contrast ("normal", or "more" for
+// prefers-contrast: more). They're the same as the Mac app's Modern
+// defaults, with its Increase Contrast values for "more". "background"
+// is the canvas around the board. "odd-tiles" and "even-tiles" are the
+// tiles with odd and even numbers, as the Mac colours them. "flash" and "flash-alternate" are the
+// two phases of a completion flash, the Mac's "Flash light" and "Flash
+// dark".
+var element_colour_defaults = {
+    "Fifteen": {
+        "background":   { light: { normal: "#f5f5f7", more: "#ffffff" },
+                          dark:  { normal: "#1c1c1e", more: "#0f0f10" } },
+        "board":        { light: { normal: "#8a8a8f", more: "#86868b" },
+                          dark:  { normal: "#6e6e73", more: "#6c6c70" } },
+        "spaces":       { light: { normal: "#8a8a8f", more: "#86868b" },
+                          dark:  { normal: "#6e6e73", more: "#6c6c70" } },
+        "odd-tiles":    { light: { normal: "#f5f5f7", more: "#ffffff" },
+                          dark:  { normal: "#1c1c1e", more: "#0f0f10" } },
+        "even-tiles":   { light: { normal: "#f5f5f7", more: "#ffffff" },
+                          dark:  { normal: "#1c1c1e", more: "#0f0f10" } },
+        "tile-numbers": { light: { normal: "#1d1d1f", more: "#000000" },
+                          dark:  { normal: "#f2f2f7", more: "#ffffff" } },
+        "flash":        { light: { normal: "#86868b", more: "#6e6e73" },
+                          dark:  { normal: "#c7c7cc", more: "#f2f2f7" } },
+        "flash-alternate":
+                        { light: { normal: "#3a3a3c", more: "#242426" },
+                          dark:  { normal: "#6c6c70", more: "#7c7c80" } }
+    }
+};
+
+// Under forced-colors: active, each colour name's default is a CSS
+// system colour instead, and the colour name it's drawn on top of, if
+// any, in case the system colour isn't opaque. A label is drawn on top
+// of its own element's body instead (element_colour's `under`).
+var element_system_colours = {
+    "background":   { system: "Canvas" },
+    "board":        { system: "Canvas" },
+    "spaces":       { system: "Canvas" },
+    "odd-tiles":    { system: "ButtonFace", over: "spaces" },
+    "even-tiles":   { system: "ButtonFace", over: "spaces" },
+    "tile-numbers": { system: "ButtonText", over: "even-tiles" },
+    "flash":        { system: "Highlight", over: "spaces" }
+};
+
+// The element colour an element of `kind` with this id is drawn in. A
+// tile's id is its number, and odd and even tiles have their own
+// colours, as on the Mac.
+function element_body_colour(kind, id) {
+    if (kind === "tile")
+        return id % 2 !== 0 ? "odd-tiles" : "even-tiles";
+    return { board: "board", space: "spaces" }[kind];
+}
+// The element colour for an element's label.
+var element_label_colour = "tile-numbers";
+
+// The element colour an element in a completion flash is drawn in, by
+// its flags (ELEMENT_FLASH and ELEMENT_FLASH_ALT in puzzles.h), or null
+// for an element at rest. Under forced colours, the alternate phase is
+// drawn at rest, so the flash is Highlight on and off.
+function element_flash_colour(flags) {
+    if (flags & 1)
+        return "flash";
+    if ((flags & 2) && !board_forced_colours())
+        return "flash-alternate";
+    return null;
+}
+
+function board_media_query(query) {
+    return window.matchMedia ? window.matchMedia(query) : null;
+}
+var board_dark_query = board_media_query("(prefers-color-scheme: dark)");
+var board_contrast_query = board_media_query("(prefers-contrast: more)");
+var board_forced_query = board_media_query("(forced-colors: active)");
+
+function board_query_matches(query) {
+    return query !== null && query.matches;
+}
+
+function board_setting_load(key) {
+    try {
+        return localStorage.getItem(key);
+    } catch (error) {
+        // Storage is unavailable, so use the default.
+        return null;
+    }
+}
+
+function board_setting_save(key, value) {
+    try {
+        localStorage.setItem(key, value);
+    } catch (error) {
+        // Storage is unavailable: the choice lasts for this page only.
+    }
+}
+
+// The colours a player can replace with Custom Colours, in the order
+// the Colours dialog shows them, with the dialog's names for them.
+var custom_colour_names = ["background", "board", "spaces", "odd-tiles",
+                           "even-tiles", "tile-numbers"];
+var custom_colour_labels = {
+    "background": "Background", "board": "Board", "spaces": "Spaces",
+    "odd-tiles": "Odd tiles", "even-tiles": "Even tiles",
+    "tile-numbers": "Tile numbers"
+};
+// Names stored by earlier versions, and the colours each now stands
+// for where those have no colour of their own: one Tiles colour was
+// split into Odd tiles and Even tiles.
+var custom_colour_aliases = { "tiles": ["odd-tiles", "even-tiles"] };
+
+// Custom Colours belong to one puzzle, so they're stored by page, as
+// the preferences are, as JSON: {"light":{"odd-tiles":"#6a1b9a"},...}.
+function custom_colours_key() {
+    return location.pathname + " colours";
+}
+
+// Custom Colours from their stored JSON, as { light, dark }. Anything
+// that isn't JSON is ignored entirely, and so is any entry with an
+// unknown name or a value that isn't #rrggbb. An earlier name in
+// custom_colour_aliases fills in the colours it stands for.
+function custom_colours_parse(text) {
+    var custom = { light: {}, dark: {} };
+    var data = null;
+    try {
+        data = JSON.parse(text);
+    } catch (error) {
+        return custom;
+    }
+    if (data === null || typeof data !== "object")
+        return custom;
+    ["light", "dark"].forEach(function(appearance) {
+        var set = data[appearance];
+        if (set === null || typeof set !== "object")
+            return;
+        var valid = function(value) {
+            return typeof value === "string" && /^#[0-9a-f]{6}$/i.test(value);
+        };
+        custom_colour_names.forEach(function(name) {
+            if (valid(set[name]))
+                custom[appearance][name] = set[name].toLowerCase();
+        });
+        Object.keys(custom_colour_aliases).forEach(function(alias) {
+            if (!valid(set[alias]))
+                return;
+            custom_colour_aliases[alias].forEach(function(name) {
+                if (!custom[appearance][name])
+                    custom[appearance][name] = set[alias].toLowerCase();
+            });
+        });
+    });
+    return custom;
+}
+
+// Whether two sets of Custom Colours are the same.
+function custom_colours_equal(a, b) {
+    return ["light", "dark"].every(function(appearance) {
+        return custom_colour_names.every(function(name) {
+            return a[appearance][name] === b[appearance][name];
+        });
+    });
+}
+
+// Store this puzzle's Custom Colours, leaving out an appearance with
+// none, and removing the key altogether if there are none at all.
+function custom_colours_save() {
+    var data = {}, any = false;
+    ["light", "dark"].forEach(function(appearance) {
+        if (Object.keys(board_style.custom[appearance]).length > 0) {
+            data[appearance] = board_style.custom[appearance];
+            any = true;
+        }
+    });
+    try {
+        if (any)
+            localStorage.setItem(custom_colours_key(), JSON.stringify(data));
+        else
+            localStorage.removeItem(custom_colours_key());
+    } catch (error) {
+        // Storage is unavailable: the colours last for this page only.
+    }
+}
+
+// Read the board style and appearance, falling back to Modern and
+// System if they're missing, unknown or storage is unavailable, and
+// this puzzle's Custom Colours.
+function board_style_load() {
+    var style = board_setting_load(board_style_key);
+    board_style.style = (style === "classic" ? "classic" : "modern");
+    var appearance = board_setting_load(board_appearance_key);
+    board_style.appearance = (appearance === "light" ||
+                              appearance === "dark" ? appearance : "system");
+    board_style.custom = custom_colours_parse(
+        board_setting_load(custom_colours_key()));
+}
+
+// The board's appearance, "light" or "dark": the one the player chose,
+// or under System the browser's colour scheme.
+function board_appearance() {
+    if (board_style.appearance !== "system")
+        return board_style.appearance;
+    return board_query_matches(board_dark_query) ? "dark" : "light";
+}
+
+function board_contrast() {
+    return board_query_matches(board_contrast_query) ? "more" : "normal";
+}
+
+function board_forced_colours() {
+    return board_query_matches(board_forced_query);
+}
+
+// A hidden element, never given a colour scheme, whose computed style
+// tells us what a CSS system colour currently is.
+var board_colour_probe = null;
+
+// A colour as [r, g, b, a], from what getComputedStyle gives for one:
+// "rgb(r, g, b)", "rgba(r, g, b, a)" or "#rrggbb".
+function board_colour_parse(colour) {
+    var m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(colour);
+    if (m)
+        return [parseInt(m[1], 16), parseInt(m[2], 16), parseInt(m[3], 16), 1];
+    var parts = (colour.match(/[0-9.]+/g) || []).map(Number);
+    return [parts[0] || 0, parts[1] || 0, parts[2] || 0,
+            parts.length > 3 ? parts[3] : 1];
+}
+
+function board_colour_hex(rgb) {
+    var hex = "#";
+    for (var i = 0; i < 3; i++)
+        hex += ("0" + Math.round(rgb[i]).toString(16)).slice(-2);
+    return hex;
+}
+
+// The CSS system colour `name` as [r, g, b, a].
+function board_system_colour_rgba(name) {
+    if (board_colour_probe === null) {
+        board_colour_probe = document.createElement("span");
+        board_colour_probe.style.display = "none";
+        board_colour_probe.style.setProperty("forced-color-adjust", "none");
+        document.body.appendChild(board_colour_probe);
+    }
+    board_colour_probe.style.color = "";
+    board_colour_probe.style.color = name;
+    return board_colour_parse(getComputedStyle(board_colour_probe).color);
+}
+
+// The CSS system colour `name` as #rrggbb, drawn over the colour
+// `under` (#rrggbb) if it isn't opaque.
+function board_system_colour(name, under) {
+    var top = board_system_colour_rgba(name);
+    var bottom = board_colour_parse(under || "#ffffff");
+    var a = top[3];
+    return board_colour_hex([0, 1, 2].map(function(i) {
+        return top[i] * a + bottom[i] * (1 - a);
+    }));
+}
+
+// The puzzle's default colour table, or null if it has none.
+function element_colour_table() {
+    if (board_elements.puzzle === null)
+        return null;
+    return element_colour_defaults[board_elements.puzzle.name] || null;
+}
+
+// Whether the page draws this puzzle's board elements.
+function board_style_modern() {
+    return board_style.style === "modern" && element_colour_table() !== null;
+}
+
+// The current colour for one element colour name, as #rrggbb, or
+// null: the player's Custom Colour for the board's appearance if
+// there is one, which wins over every default, or else the default.
+// Under forced colours, a system colour that isn't opaque is taken
+// over `under` (#rrggbb) if given, or else over its usual colour.
+function element_colour(name, under) {
+    var table = element_colour_table();
+    if (table === null || !table[name])
+        return null;
+    var custom = board_style.custom[board_appearance()][name];
+    if (custom)
+        return custom;
+    if (board_forced_colours() && element_system_colours[name]) {
+        var system = element_system_colours[name];
+        return board_system_colour(system.system, under ? under :
+                                   system.over ? element_colour(system.over) :
+                                   null);
+    }
+    return table[name][board_appearance()][board_contrast()];
+}
+
+// Black or white, whichever contrasts more with `colour` (#rrggbb), by
+// WCAG 2 relative luminance, as the Mac picks its Increase Contrast
+// hairlines.
+function board_hairline_colour(colour) {
+    var rgb = board_colour_parse(colour);
+    var linear = rgb.slice(0, 3).map(function(c) {
+        c /= 255;
+        return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+    });
+    var l = 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2];
+    var with_black = (l + 0.05) / 0.05, with_white = 1.05 / (l + 0.05);
+    return with_black >= with_white ? "#000000" : "#ffffff";
+}
+
+// The 1-pixel edge an element of `kind` gets, drawn in `body`, or null
+// for none. At rest there's none, as on the Mac. Under forced colours,
+// Tiles get ButtonBorder. Under prefers-contrast: more, Tiles and the
+// Board get a black or white hairline against the colour around them.
+// A flashing Tile is surrounded by Spaces flashing with it, so its
+// hairline is against its own colour.
+function board_element_edge(kind, body, flashing) {
+    if (board_forced_colours())
+        return kind === "tile" ? board_system_colour("ButtonBorder", body) : null;
+    if (board_contrast() !== "more")
+        return null;
+    if (kind === "tile")
+        return board_hairline_colour(flashing ? body :
+                                     element_colour("spaces"));
+    if (kind === "board")
+        return board_hairline_colour(element_colour("background"));
+    return null;
+}
+
+// Called for every board element the puzzle draws. Returns whether we
+// drew it.
+function board_element_draw(kind, flags, id, label, x, y, w, h, label_y) {
+    board_style.converted = true;
+    if (!board_style_modern())
+        return false;
+    var body = element_colour(element_body_colour(element_kinds[kind], id));
+    if (body === null)
+        return false;
+    var rest = body;
+    var flash = element_flash_colour(flags);
+    if (flash !== null)
+        body = element_colour(flash);
+    ctx.fillStyle = body;
+    ctx.fillRect(x, y, w, h);
+    var edge = board_element_edge(element_kinds[kind], body, flash !== null);
+    if (edge !== null && w > 2 && h > 2) {
+        ctx.strokeStyle = edge;
+        ctx.lineWidth = 1;
+        ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+    }
+    if (label !== null) {
+        // As draw_text() would with FONT_VARIABLE, a third of the
+        // height, and ALIGN_VCENTRE | ALIGN_HCENTRE.
+        canvas_set_font(ctx, (h / 3) | 0, false);
+        // In a flash the Label keeps its colour, except on Highlight.
+        ctx.fillStyle = (flash !== null && board_forced_colours()) ?
+            board_system_colour("HighlightText", body) :
+            element_colour(element_label_colour, rest);
+        ctx.textAlign = "center";
+        ctx.textBaseline = "alphabetic";
+        ctx.fillText(label, x + ((w / 2) | 0), label_y);
+    }
+    return true;
+}
+
+// Called for every rectangle drawn in colour 0, with that colour.
+// Under Modern, a fill of the whole canvas (the mid end's first fill
+// of a new drawing) is the background around the board, so it's drawn
+// in our background colour instead.
+function board_style_surround(x, y, w, h, fill) {
+    if (x > 0 || y > 0 || (x + w) * fe_scale < offscreen_canvas.width ||
+        (y + h) * fe_scale < offscreen_canvas.height)
+        return fill;
+    if (board_style.converted && board_style_modern()) {
+        board_style.surround_stale = false;
+        return element_colour("background");
+    }
+    board_style.surround_stale = true;
+    return fill;
+}
+
+// Called after every redraw. If the canvas was filled before we knew
+// the puzzle was converted, its background is in the wrong colour, so
+// redraw once more.
+function board_style_end_draw() {
+    if (board_style.converted && board_style_modern() &&
+        board_style.surround_stale)
+        board_restyle();
+}
+
+// The Mac's dark Background default, by contrast: the page's
+// background under Dark when the board doesn't give one.
+var page_dark_background = { normal: "#1c1c1e", more: "#0f0f10" };
+
+// The page's background around the canvas follows the board's, and
+// the page follows the board's appearance: under Dark, its own rules
+// in jspage.pl restyle it, on the board's Background under Modern.
+// Under Light it's left exactly as it was.
+function board_style_page_background() {
+    var root = document.documentElement;
+    var background = null;
+    if (board_style.converted && board_style_modern())
+        background = element_colour("background");
+    if (colours.length > 0 || background !== null)
+        root.style.setProperty("--puzzle-background",
+                               background || colours[0]);
+    if (board_appearance() === "dark") {
+        root.setAttribute("data-appearance", "dark");
+        root.style.setProperty("--page-background", background ||
+                               page_dark_background[board_contrast()]);
+    } else {
+        root.removeAttribute("data-appearance");
+        root.style.removeProperty("--page-background");
+        if (root.getAttribute("style") === "")
+            root.removeAttribute("style");
+    }
+}
+
+// Redraw the whole board in its current style. It's run once the
+// current call into C has returned, so it's safe to ask for from
+// inside a redraw, and several requests make one redraw.
+function board_restyle() {
+    if (board_style.restyle_queued)
+        return;
+    board_style.restyle_queued = true;
+    Promise.resolve().then(function() {
+        board_style.restyle_queued = false;
+        board_style_page_background();
+        command(11);
+    });
+}
+
+// The default for one Custom Colour under `appearance`, as #rrggbb,
+// as the Colours dialog shows it. Under forced colours it's the
+// system colour, whatever its alpha. A puzzle without its own table
+// shows Fifteen's, the Modern defaults it will start from.
+function custom_colour_default(name, appearance) {
+    if (board_forced_colours() && element_system_colours[name])
+        return board_colour_hex(
+            board_system_colour_rgba(element_system_colours[name].system));
+    var table = element_colour_table() || element_colour_defaults["Fifteen"];
+    return table[name][appearance][board_contrast()];
+}
+
+// Game > Colours...: the player's Custom Colours for this puzzle, for
+// Light and Dark. Changes show on the board as they're made, when
+// they're for the board's appearance; OK stores them, and Cancel puts
+// back the ones the dialog opened with.
+function colours_dialog() {
+    var opened = JSON.parse(JSON.stringify(board_style.custom));
+    var classic = board_style.style === "classic";
+    var chosen = board_appearance();
+    var name = board_elements.puzzle ? board_elements.puzzle.name : "Puzzle";
+    var rows = [];
+
+    // A restyle, if the change is to what the board shows.
+    var preview = function(appearance) {
+        if (appearance === board_appearance())
+            board_restyle();
+    };
+    var refresh = function() {
+        rows.forEach(function(row) {
+            var custom = board_style.custom[chosen][row.name];
+            row.well.value = custom || custom_colour_default(row.name, chosen);
+            row.well.disabled = classic;
+            row.reset.disabled = classic || !custom;
+        });
+    };
+
+    dialog_init(name + " colours");
+
+    if (classic) {
+        var note = document.createElement("p");
+        note.textContent = "Custom Colours apply to the Modern Board Style.";
+        dlg_form.appendChild(note);
+    }
+
+    var fieldset = document.createElement("fieldset");
+    fieldset.className = "coloursappearance";
+    var legend = document.createElement("legend");
+    legend.textContent = "Appearance";
+    fieldset.appendChild(legend);
+    ["light", "dark"].forEach(function(appearance) {
+        var label = document.createElement("label");
+        var radio = document.createElement("input");
+        radio.type = "radio";
+        radio.name = "coloursappearance";
+        radio.value = appearance;
+        radio.checked = (appearance === chosen);
+        radio.onchange = function() {
+            chosen = appearance;
+            refresh();
+        };
+        label.appendChild(radio);
+        label.appendChild(document.createTextNode(
+            appearance === "light" ? " Light" : " Dark"));
+        fieldset.appendChild(label);
+    });
+    dlg_form.appendChild(fieldset);
+
+    custom_colour_names.forEach(function(colour) {
+        var row = { name: colour };
+        var div = document.createElement("div");
+        div.className = "colourrow";
+        var label = document.createElement("label");
+        label.htmlFor = "colour-" + colour;
+        label.textContent = custom_colour_labels[colour];
+        row.well = document.createElement("input");
+        row.well.type = "color";
+        row.well.id = "colour-" + colour;
+        // Only picking a colour makes a Custom Colour.
+        row.well.oninput = function() {
+            board_style.custom[chosen][colour] = row.well.value.toLowerCase();
+            row.reset.disabled = false;
+            preview(chosen);
+        };
+        row.reset = document.createElement("input");
+        row.reset.type = "button";
+        row.reset.value = "Reset";
+        row.reset.setAttribute("aria-label",
+                               "Reset " + custom_colour_labels[colour]);
+        row.reset.onclick = function() {
+            delete board_style.custom[chosen][colour];
+            refresh();
+            preview(chosen);
+        };
+        div.appendChild(label);
+        div.appendChild(row.well);
+        div.appendChild(row.reset);
+        dlg_form.appendChild(div);
+        rows.push(row);
+    });
+
+    var reset_all = document.createElement("input");
+    reset_all.type = "button";
+    reset_all.value = "Reset all";
+    reset_all.disabled = classic;
+    reset_all.onclick = function() {
+        board_style.custom = { light: {}, dark: {} };
+        refresh();
+        board_restyle();
+    };
+    dlg_form.appendChild(reset_all);
+    dlg_form.appendChild(document.createElement("br"));
+
+    refresh();
+    dialog_launch(function(event) {
+        if (!custom_colours_equal(board_style.custom, opened))
+            custom_colours_save();
+        dialog_cleanup();
+    }, function(event) {
+        var changed = !custom_colours_equal(board_style.custom, opened);
+        board_style.custom = opened;
+        dialog_cleanup();
+        if (changed)
+            board_restyle();
+    });
+}
+
+// Set up one of the board's radio-group submenus, for board_style's
+// `field`, stored under `key`.
+function board_setting_menu(name, field, key) {
+    var ticks = menuform.querySelectorAll("input[name='" + name + "']");
+    for (var i = 0; i < ticks.length; i++) {
+        ticks[i].checked = (ticks[i].value === board_style[field]);
+        ticks[i].onclick = function(event) {
+            if (dlg_dimmer !== null)
+                return;
+            board_style[field] = event.target.value;
+            board_setting_save(key, board_style[field]);
+            board_restyle();
+            // Close the menu, as choosing a Type does.
+            onscreen_canvas.focus();
+        };
+    }
+}
+
+// Set up the Board style and Appearance submenus and follow the
+// browser's colour scheme, contrast and forced colours. Called at
+// startup, before the first redraw.
+function board_style_init() {
+    board_style_load();
+    board_setting_menu("boardstyle", "style", board_style_key);
+    board_setting_menu("appearance", "appearance", board_appearance_key);
+    board_style_page_background();
+    [board_dark_query, board_contrast_query, board_forced_query].forEach(
+        function(query) {
+            if (query !== null)
+                query.addListener(board_restyle);
+        });
+}
+
 // Set the font on a CanvasRenderingContext2d based on the CSS font
 // for the canvas, the requested size, and whether we want something
 // monospaced.
@@ -909,19 +1527,27 @@ function dialog_init(titletext) {
     dlg_dimmer.id = "dlgdimmer";
 
     // Now create a form which sits on top of that in turn.
+    // Named by its title, it's a form landmark for assistive
+    // technology.
     dlg_form = document.createElement("form");
     dlg_form.id = "dlgform";
+    dlg_form.setAttribute("aria-labelledby", "dlgtitle");
 
     var title = document.createElement("h2");
+    title.id = "dlgtitle";
     title.appendChild(document.createTextNode(titletext));
     dlg_form.appendChild(title);
 
     dlg_return_funcs = [];
+    dlg_ok_function = dlg_cancel_function = null;
 }
 
 function dialog_launch(ok_function, cancel_function) {
     // Put in the OK and Cancel buttons at the bottom.
     var button;
+
+    dlg_ok_function = ok_function || null;
+    dlg_cancel_function = cancel_function || null;
 
     if (ok_function) {
         button = document.createElement("input");
@@ -948,6 +1574,7 @@ function dialog_cleanup() {
     document.body.removeChild(dlg_dimmer);
     document.body.removeChild(dlg_form);
     dlg_dimmer = dlg_form = null;
+    dlg_ok_function = dlg_cancel_function = null;
     onscreen_canvas.focus();
 }
 
@@ -1073,6 +1700,7 @@ function initPuzzle() {
     // Mostly those are button presses, but there's also one for the
     // game-type dropdown having been changed.
     command = Module.cwrap('command', 'void', ['number']);
+    board_style_init();
     // The game commands, announced as the same keys are.
     var game_command = function(n, action) {
         board_announce_begin(action);
@@ -1115,6 +1743,10 @@ function initPuzzle() {
     if (prefs_button) prefs_button.onclick = function(event) {
         if (dlg_dimmer === null)
             command(10);
+    };
+    if (colours_button) colours_button.onclick = function(event) {
+        if (dlg_dimmer === null)
+            colours_dialog();
     };
 
     // 'number' is used for C pointers
@@ -1312,19 +1944,30 @@ function initPuzzle() {
     });
 
     // In our dialog boxes, Return and Escape should be like pressing
-    // OK and Cancel respectively
+    // OK and Cancel respectively. A dialog with only an OK button
+    // closes with it on Escape too. Only a C config dialog launched
+    // without its own functions goes straight to command(3) and (4).
     document.addEventListener("keydown", function(event) {
 
         if (dlg_dimmer !== null && event.keyCode == 13) {
-            for (var i in dlg_return_funcs)
-                dlg_return_funcs[i]();
-            command(3);
+            if (dlg_ok_function !== null) {
+                dlg_ok_function(event);
+            } else {
+                for (var i in dlg_return_funcs)
+                    dlg_return_funcs[i]();
+                command(3);
+            }
             event.preventDefault();
             event.stopPropagation();
         }
 
         if (dlg_dimmer !== null && event.keyCode == 27) {
-            command(4);
+            if (dlg_cancel_function !== null)
+                dlg_cancel_function(event);
+            else if (dlg_ok_function !== null)
+                dlg_ok_function(event);
+            else
+                command(4);
             event.preventDefault();
             event.stopPropagation();
         }

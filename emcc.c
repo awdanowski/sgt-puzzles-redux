@@ -68,8 +68,9 @@ extern void js_deactivate_timer(void);
 extern void js_canvas_start_draw(drawing *dr);
 extern void js_canvas_draw_update(drawing *dr, int x, int y, int w, int h);
 extern void js_canvas_end_draw(drawing *dr);
-extern void js_element(int kind, int id, const char *label,
-                       int x, int y, int w, int h);
+extern bool js_element(int kind, unsigned int flags, int id,
+                       const char *label, int x, int y, int w, int h,
+                       int label_y);
 extern void js_end_draw_state(bool at_rest, int status);
 extern void js_canvas_draw_rect(drawing *dr,
                                 int x, int y, int w, int h, int colour);
@@ -578,15 +579,22 @@ static char *js_text_fallback(drawing *dr, const char *const *strings,
 /*
  * Board elements (see draw_element() in devel.but) are passed on to
  * JS, which keeps a model of the board from them to present to
- * assistive technology. We never draw them ourselves, so the puzzle
- * draws them as it always has.
+ * assistive technology, and may draw them itself in the Modern board
+ * style. The colour is never passed: JS chooses its own colours by
+ * the element's kind and flags. For an element with a label, JS also
+ * gets the baseline that draw_text() would use to centre the label
+ * vertically at a third of the element's height, so that JS's label
+ * sits where the puzzle's own would.
  */
 static bool js_draw_element(drawing *dr, int kind, unsigned int flags,
                             int id, const char *label,
                             int x, int y, int w, int h, int colour)
 {
-    js_element(kind, id, label, x, y, w, h);
-    return false;
+    int label_y = 0;
+
+    if (label)
+        label_y = y + h/2 + js_canvas_find_font_midpoint(h/3, false);
+    return js_element(kind, flags, id, label, x, y, w, h, label_y);
 }
 
 /*
@@ -863,6 +871,13 @@ void command(int n)
         break;
       case 10:                         /* user preferences */
         cfg_start(CFG_PREFS);
+        break;
+      case 11:                         /* restyle: the board's look changed */
+        /*
+         * Redraw the whole board from scratch, since a puzzle
+         * redraws only what it thinks has changed.
+         */
+        midend_force_redraw(me);
         break;
     }
 }

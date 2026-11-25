@@ -339,16 +339,20 @@ mergeInto(LibraryManager.library, {
     },
 
     /*
-     * void js_element(int kind, int id, const char *label,
-     *                 int x, int y, int w, int h);
+     * bool js_element(int kind, unsigned flags, int id,
+     *                 const char *label, int x, int y, int w, int h,
+     *                 int label_y);
      *
      * Record a board element the puzzle is drawing (see
-     * draw_element() in devel.but). The C side declines to draw it,
-     * so the puzzle draws it as usual; we only keep the model.
+     * draw_element() in devel.but), and draw it in the Modern board
+     * style. Returns true if we drew it (label included, its baseline
+     * at label_y), or false if the puzzle should draw it as usual.
      */
-    js_element: function(kind, id, label, x, y, w, h) {
-        board_element_record(kind, id, label ? UTF8ToString(label) : null,
-                             x, y, w, h);
+    js_element: function(kind, flags, id, label, x, y, w, h, label_y) {
+        label = label ? UTF8ToString(label) : null;
+        board_element_record(kind, id, label, x, y, w, h);
+        return board_element_draw(kind, flags, id, label, x, y, w, h,
+                                  label_y);
     },
 
     /*
@@ -360,6 +364,7 @@ mergeInto(LibraryManager.library, {
      */
     js_end_draw_state: function(at_rest, status) {
         board_elements_end_draw(at_rest, status);
+        board_style_end_draw();
     },
 
     /*
@@ -369,7 +374,10 @@ mergeInto(LibraryManager.library, {
      * Draw a rectangle.
      */
     js_canvas_draw_rect: function(dr, x, y, w, h, colour) {
-        ctx.fillStyle = colours[colour];
+        var fill = colours[colour];
+        if (colour == 0)
+            fill = board_style_surround(x, y, w, h, fill);
+        ctx.fillStyle = fill;
         ctx.fillRect(x, y, w, h);
     },
 
