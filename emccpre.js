@@ -233,6 +233,646 @@ function canvas_mouse_coords(event, element) {
     return {x: rcoords.x * xscale, y: rcoords.y * yscale}
 }
 
+// Board elements: the parts of the board a puzzle describes through
+// draw_element() (see devel.but), such as its tiles, kept here so that
+// the page can present the board to assistive technology. A puzzle
+// that doesn't call draw_element() leaves all of this unused.
+var element_kinds = { 1: "board", 2: "space", 3: "tile" };
+var board_elements = {
+    // The puzzle, from js_puzzle_info(): { name, can_solve,
+    // one_key_shortcuts }.
+    puzzle: null,
+    // The model as of the latest redraw that ended at rest, or null if
+    // the puzzle has sent no elements. The board comes first, then the
+    // rest in reading order. Each element is { kind, id, label, rect,
+    // page }: rect is in the puzzle's drawing coordinates, and page is
+    // the same rectangle in page coordinates, where the canvas is now.
+    published: null,
+    // The game's status (positive once solved) at that redraw.
+    status: 0,
+    // Whether the latest mouse press had no effect: { no_effect }.
+    press_result: null,
+    // Functions called as f(published, status) on every publish.
+    listeners: [],
+    // The elements as the calls since the last board describe them,
+    // which may be in between positions during a move animation, each
+    // with the order it was first seen in.
+    recorded: [],
+    next_order: 0
+};
+
+function rect_contains(outer, inner) {
+    return outer.x <= inner.x && outer.y <= inner.y &&
+        inner.x + inner.w <= outer.x + outer.w &&
+        inner.y + inner.h <= outer.y + outer.h;
+}
+
+// Apply one draw_element() call by devel.but's identity rules: kind
+// and id identify an element, a board starts a new board, the latest
+// call for an element wins, and a covered element is gone.
+function board_element_record(kind, id, label, x, y, w, h) {
+    if (board_overlay === null)
+        board_overlay_create();
+    var element = { kind: element_kinds[kind] || kind, id: id,
+                    label: label, rect: { x: x, y: y, w: w, h: h } };
+    var same = function(r) {
+        return r.element.kind === element.kind && r.element.id === id;
+    };
+    if (element.kind === "board") {
+        board_elements.recorded = [{ element: element, order: 0 }];
+        board_elements.next_order = 1;
+        return;
+    }
+    board_elements.recorded = board_elements.recorded.filter(function(r) {
+        return same(r) || r.element.rect.w <= 0 || r.element.rect.h <= 0 ||
+            !rect_contains(element.rect, r.element.rect);
+    });
+    var existing = board_elements.recorded.find(same);
+    if (existing)
+        existing.element = element;
+    else
+        board_elements.recorded.push(
+            { element: element, order: board_elements.next_order++ });
+}
+
+// Map a rectangle in the puzzle's drawing coordinates to page
+// coordinates: the reverse of canvas_mouse_coords. The canvas's
+// width in device pixels over its CSS width accounts for the device
+// pixel ratio, and fe_scale for the part of it applied as scaling.
+function canvas_page_rect(rect) {
+    var origin = element_coords(onscreen_canvas);
+    var xscale = onscreen_canvas.offsetWidth * fe_scale / onscreen_canvas.width;
+    var yscale = onscreen_canvas.offsetHeight * fe_scale / onscreen_canvas.height;
+    return { x: origin.x + rect.x * xscale, y: origin.y + rect.y * yscale,
+             w: rect.w * xscale, h: rect.h * yscale };
+}
+
+// Called after every redraw. Only at rest does the model describe the
+// board as it is, so only then is it published. A completion flash
+// moves nothing, and counts as at rest.
+function board_elements_end_draw(at_rest, status) {
+    if (board_elements.recorded.length === 0)
+        return;
+    board_announce_drawn();
+    if (!at_rest)
+        return;
+    var sorted = board_elements.recorded.slice().sort(function(a, b) {
+        var x = a.element, y = b.element;
+        if ((x.kind === "board") !== (y.kind === "board"))
+            return x.kind === "board" ? -1 : 1;
+        if (x.rect.y !== y.rect.y) return x.rect.y - y.rect.y;
+        if (x.rect.x !== y.rect.x) return x.rect.x - y.rect.x;
+        return a.order - b.order;
+    });
+    board_elements.published = sorted.map(function(r) {
+        var e = r.element;
+        var rect = { x: e.rect.x, y: e.rect.y, w: e.rect.w, h: e.rect.h };
+        return Object.defineProperty(
+            { kind: e.kind, id: e.id, label: e.label, rect: rect }, "page",
+            { enumerable: true,
+              get: function() { return canvas_page_rect(rect); } });
+    });
+    board_elements.status = status;
+    board_overlay_update(board_elements.published);
+    for (var i = 0; i < board_elements.listeners.length; i++)
+        board_elements.listeners[i](board_elements.published, status);
+    board_announce_published(board_elements.published, status);
+}
+
+// The accessible board: a labelled table of transparent buttons laid
+// over the canvas, for assistive technology, with a row for each row of
+// squares and a cell for each square holding its button. A table is
+// what lets a screen reader move up and down as well as along a row;
+// unlike a grid, it has no keys of its own, so the canvas keeps the
+// arrow keys. A button stands for a square, not for what's on it, so
+// the same buttons stay in the same cells and only their labels change.
+// Pointer events pass through to the canvas, and the canvas stays the
+// only Tab stop. It's created on the first board element, so a puzzle
+// that sends none leaves the page as it was.
+var board_overlay = null;
+
+// Called from initPuzzle with a function pressing the left button at a
+// point in the puzzle's drawing coordinates, through the mouse path.
+var board_square_press = null;
+
+function board_overlay_create() {
+    var parent = onscreen_canvas.parentNode;
+    var table = document.createElement("div");
+    table.id = "puzzleboard";
+    table.setAttribute("role", "table");
+    parent.insertBefore(table, onscreen_canvas.nextSibling);
+
+    var hint = document.createElement("div");
+    hint.id = "puzzlekeyhint";
+    hint.className = "visually-hidden";
+    hint.textContent = "Use the arrow keys, or press a square on the board.";
+    parent.insertBefore(hint, table.nextSibling);
+    onscreen_canvas.setAttribute("aria-describedby", hint.id);
+
+    board_overlay = { table: table, hint: hint, row_elements: [] };
+    board_announce_create();
+    board_overlay_name();
+    window.addEventListener("resize", board_overlay_fit);
+}
+
+// Name the canvas and the board after the puzzle.
+function board_overlay_name() {
+    var puzzle = board_elements.puzzle;
+    if (board_overlay === null || puzzle === null)
+        return;
+    onscreen_canvas.setAttribute("aria-label",
+                                 puzzle.name + ", keyboard play");
+    if (board_overlay.columns)
+        board_overlay.table.setAttribute(
+            "aria-label", puzzle.name + " board, " + board_overlay.columns +
+                " by " + board_overlay.rows);
+}
+
+// Lay the table over the canvas's box. Its rows and cells are placed
+// in percentages of it, so they follow. The size is the one
+// js_canvas_set_size gives the canvas, which holds even while the
+// puzzle is still hidden; the position is measured, so it's measured
+// again once the puzzle is shown.
+function board_overlay_fit() {
+    if (board_overlay === null)
+        return;
+    var style = board_overlay.table.style;
+    var dpr = window.devicePixelRatio || 1;
+    style.left = onscreen_canvas.offsetLeft + "px";
+    style.top = onscreen_canvas.offsetTop + "px";
+    style.width = onscreen_canvas.width / dpr + "px";
+    style.height = onscreen_canvas.height / dpr + "px";
+}
+
+function board_square_click(event) {
+    var rect = this.board_rect;
+    if (board_square_press !== null && rect)
+        board_square_press(Math.floor(rect.x + rect.w / 2),
+                           Math.floor(rect.y + rect.h / 2),
+                           this.board_element);
+}
+
+function rect_intersects(a, b) {
+    return a.x < b.x + b.w && b.x < a.x + a.w &&
+        a.y < b.y + b.h && b.y < a.y + a.h;
+}
+
+// How a square is said: its label, "Empty" for the space, or "Tile"
+// for a tile without one.
+function board_spoken_label(element) {
+    return element.kind === "space" ? "Empty" :
+        element.label !== null ? element.label : "Tile";
+}
+
+// Where each space and tile of a published model sits on the board,
+// by row and column counting from 1, in reading order. Each distinct
+// left edge on the board is a column, and each distinct top edge a
+// row, so this needs no puzzle's rules.
+function board_layout(published) {
+    var board = published[0].kind === "board" ? published[0].rect : null;
+    var pieces = published.filter(function(e) {
+        return (e.kind === "space" || e.kind === "tile") &&
+            (board === null || rect_intersects(board, e.rect));
+    });
+    var edges = function(axis) {
+        var seen = [];
+        pieces.forEach(function(e) {
+            if (seen.indexOf(e.rect[axis]) < 0) seen.push(e.rect[axis]);
+        });
+        return seen.sort(function(a, b) { return a - b; });
+    };
+    var lefts = edges("x"), tops = edges("y");
+    var cells = pieces.map(function(e) {
+        return { element: e, row: tops.indexOf(e.rect.y) + 1,
+                 column: lefts.indexOf(e.rect.x) + 1 };
+    });
+    cells.sort(function(a, b) {
+        return a.row !== b.row ? a.row - b.row : a.column - b.column;
+    });
+    return { columns: lefts.length, rows: tops.length, cells: cells };
+}
+
+// Bring the table up to date with a newly published model.
+function board_overlay_update(published) {
+    if (board_overlay === null || published[0].kind !== "board")
+        return;
+    var width = onscreen_canvas.width / fe_scale;
+    var height = onscreen_canvas.height / fe_scale;
+    var table = board_overlay.table, rows = board_overlay.row_elements;
+    var layout = board_layout(published);
+    var squares = layout.cells, by_row = [], i;
+
+    // The squares of each row, in reading order. Each row has at least
+    // one, since a row is a top edge of a square.
+    for (i = 0; i < layout.rows; i++)
+        by_row.push([]);
+    for (i = 0; i < squares.length; i++)
+        by_row[squares[i].row - 1].push(squares[i]);
+
+    while (rows.length < by_row.length) {
+        var row = document.createElement("div");
+        row.setAttribute("role", "row");
+        table.appendChild(row);
+        rows.push(row);
+    }
+    while (rows.length > by_row.length)
+        table.removeChild(rows.pop());
+
+    for (i = 0; i < by_row.length; i++)
+        board_overlay_fill_row(rows[i], by_row[i], width, height);
+
+    board_overlay.columns = layout.columns;
+    board_overlay.rows = layout.rows;
+    board_overlay_name();
+    board_overlay_fit();
+}
+
+// Bring one row up to date with its squares. The row spans the table's
+// width and its squares' height, and each cell sits over its square
+// within the row. Each cell holds its square's button, which fills it.
+function board_overlay_fill_row(row, squares, width, height) {
+    var top = squares[0].element.rect.y, bottom = top, i;
+    for (i = 0; i < squares.length; i++) {
+        var r = squares[i].element.rect;
+        top = Math.min(top, r.y);
+        bottom = Math.max(bottom, r.y + r.h);
+    }
+    var span = bottom - top || 1;
+    row.style.top = top / height * 100 + "%";
+    row.style.height = span / height * 100 + "%";
+
+    while (row.childNodes.length < squares.length) {
+        var cell = document.createElement("div");
+        cell.setAttribute("role", "cell");
+        var button = document.createElement("button");
+        button.type = "button";
+        button.setAttribute("tabindex", "-1");
+        button.onclick = board_square_click;
+        cell.appendChild(button);
+        row.appendChild(cell);
+    }
+    while (row.childNodes.length > squares.length)
+        row.removeChild(row.lastChild);
+
+    for (i = 0; i < squares.length; i++) {
+        var square = squares[i], rect = square.element.rect;
+        var label = board_spoken_label(square.element) +
+            ", row " + square.row + ", column " + square.column;
+        var c = row.childNodes[i], b = c.firstChild;
+        b.board_rect = rect;
+        b.board_element = square.element;
+        if (b.getAttribute("aria-label") !== label)
+            b.setAttribute("aria-label", label);
+        c.style.left = rect.x / width * 100 + "%";
+        c.style.width = rect.w / width * 100 + "%";
+        c.style.top = (rect.y - top) / span * 100 + "%";
+        c.style.height = rect.h / span * 100 + "%";
+    }
+}
+
+// Announcements: what an action changed on the board, said through a
+// live region next to the status bar. Each call into C that can change
+// the game is begun as a pending action, with the board as it was
+// published before it. The action is worded once the board is next
+// published at rest, from the boards before and after, and forgotten
+// if C did nothing with it. All the wording is here: the puzzle only
+// describes its board, and its status text is quoted as it is.
+var board_announcer = {
+    // The live region, created with the accessible board.
+    region: null,
+    // The text waiting for the next animation frame to be set, so that
+    // the first announcement and a repeated one are both heard.
+    queued: null,
+    frame: null,
+    // The action waiting to be announced: { action, before,
+    // was_solved, draws, square }. The page starts by announcing its
+    // first board.
+    pending: { action: "arrival", before: null, was_solved: false,
+               draws: 0 },
+    // A pending action still animating when another began. The midend
+    // finishes its animation during the new call, and the board it
+    // publishes then is this action's.
+    superseded: null
+};
+
+function board_announce(text) {
+    var a = board_announcer;
+    if (a.region === null)
+        return;
+    if (a.frame === null && a.region.ready && a.region.textContent !== text) {
+        a.region.textContent = text;
+        return;
+    }
+    // Before the region has been in the page for a frame, or to say the
+    // same text again, it's set on the next frame. Clearing it first
+    // makes a repeat a change the screen reader hears.
+    if (a.frame === null && a.region.ready)
+        a.region.textContent = "";
+    a.queued = text;
+    if (a.frame === null)
+        a.frame = window.requestAnimationFrame(board_announce_frame);
+}
+
+function board_announce_frame() {
+    var a = board_announcer;
+    a.frame = null;
+    a.region.ready = true;
+    if (a.queued !== null)
+        a.region.textContent = a.queued;
+    a.queued = null;
+}
+
+function board_announce_create() {
+    var region = document.createElement("div");
+    region.id = "announcer";
+    region.className = "visually-hidden";
+    region.setAttribute("aria-live", "assertive");
+    region.setAttribute("aria-atomic", "true");
+    region.ready = false;
+    if (statusbar !== null)
+        statusbar.parentNode.insertBefore(region, statusbar.nextSibling);
+    else
+        board_overlay.table.parentNode.insertBefore(
+            region, board_overlay.hint.nextSibling);
+    board_announcer.region = region;
+    if (board_announcer.frame === null)
+        board_announcer.frame =
+            window.requestAnimationFrame(board_announce_frame);
+}
+
+// Begin an action ("move", "undo", "redo", "new_game", "restart",
+// "solve" or "load") just before calling into C for it. square is the
+// square of the accessible board pressed, if any.
+function board_announce_begin(action, square) {
+    var a = board_announcer;
+    if (board_overlay === null)
+        return;
+    // An action can only still be pending while its move animates.
+    a.superseded = a.pending;
+    a.pending = { action: action, before: board_elements.published,
+                  was_solved: board_elements.status > 0, draws: 0,
+                  square: square };
+}
+
+// End the call into C. If it had no effect, or drew nothing, the
+// action is forgotten, and one it superseded is still pending. A
+// restart from the start draws nothing but is still announced.
+function board_announce_end(effect, no_effect) {
+    var a = board_announcer, p = a.pending;
+    if (board_overlay === null || p === null)
+        return;
+    if (effect && p.draws === 0 && p.action === "restart") {
+        a.pending = null;
+        board_announce_word(p, board_elements.published,
+                            board_elements.status);
+    } else if (!effect || p.draws === 0) {
+        a.pending = a.superseded;
+        if (no_effect && p.square)
+            board_announce(p.square.kind === "space" ? "Nothing to move" :
+                           board_spoken_label(p.square) + " can't move");
+    } else if (a.superseded !== null) {
+        // Its animation wasn't finished, so this action takes it over.
+        p.before = a.superseded.before;
+        p.was_solved = a.superseded.was_solved;
+    }
+    a.superseded = null;
+}
+
+// Called for every redraw, and with the model after each publish.
+function board_announce_drawn() {
+    if (board_announcer.pending !== null)
+        board_announcer.pending.draws++;
+}
+
+function board_announce_published(published, status) {
+    var a = board_announcer, p = a.superseded;
+    if (p !== null) {
+        // The superseded action's animation finished: its board is this
+        // one, and the new action starts from it.
+        a.superseded = null;
+        board_announce_word(p, published, status);
+        a.pending.before = published;
+        a.pending.was_solved = status > 0;
+        a.pending.draws = 0;
+        return;
+    }
+    p = a.pending;
+    if (p === null)
+        return;
+    a.pending = null;
+    board_announce_word(p, published, status);
+}
+
+function board_announce_word(p, after, status) {
+    var redid = p.action === "redo" ? board_history_current() : null;
+    var text = board_announcement(p.action, redid, board_elements.puzzle.name,
+                                  statusbar !== null ? statusbar.textContent : "",
+                                  p.before || [], after,
+                                  status > 0 && !p.was_solved);
+    if (text !== null)
+        board_announce(text);
+}
+
+// The action a key on the canvas runs in the midend rather than the
+// puzzle, mirroring the key mapping in key() in emcc.c and
+// midend_process_key(), which turns Ctrl+letter into a control
+// character and ignores Shift. (A puzzle that uses one of these keys
+// itself takes it first; Fifteen uses none.) Any other key is a move.
+function board_key_action(event) {
+    var key = event.key, ctrl = event.ctrlKey, c;
+    var puzzle = board_elements.puzzle;
+    if (ctrl && event.shiftKey && (key === "Z" || key === "z"))
+        return "redo";
+    if (key && key.length === 1 && key.charCodeAt(0) < 0x80)
+        c = key.charCodeAt(0);
+    else if (!key && event.char && event.char.length === 1)
+        c = event.char.charCodeAt(0) & 0xFF;
+    else
+        return "move";
+    if (ctrl) {
+        if (c < 0x40 || c >= 0x80)
+            return "move";
+        c &= 0x1F;
+    }
+    var letter = function(l) {
+        return puzzle.one_key_shortcuts &&
+            (c === l.charCodeAt(0) || c === l.toUpperCase().charCodeAt(0));
+    };
+    if (letter("n") || c === 0x0E)
+        return "new_game";
+    if (letter("u") || c === 0x2A || c === 0x1A || c === 0x1F)
+        return "undo";
+    if (letter("r") || c === 0x23 || c === 0x12 || c === 0x19)
+        return "redo";
+    if (puzzle.can_solve && c === 0x13)
+        return "solve";
+    return "move";
+}
+
+// Whether the mouse press just sent was understood but had no effect.
+function board_press_had_no_effect() {
+    var result = board_elements.press_result;
+    return result !== null && result.no_effect;
+}
+
+// Called from initPuzzle with a function returning the saved game, as
+// the Save button gives it.
+var board_save_file = null;
+
+// What the last move done or redone was ("move", "solve" or
+// "restart"), from the undo history in the saved game: its MOVE, SOLVE
+// and RESTART records, and STATEPOS, 1 at the start of the history.
+function board_history_current() {
+    var text = board_save_file !== null ? board_save_file() : "";
+    var entries = [], position = null, i = 0;
+    var read = function(terminator) {
+        var end = text.indexOf(terminator, i);
+        if (end < 0)
+            return null;
+        var s = text.substring(i, end);
+        i = end + 1;
+        return s;
+    };
+    while (i < text.length) {
+        var key = read(":"), length = key === null ? null : read(":");
+        if (length === null || !/^[0-9]+$/.test(length))
+            return null;
+        // The length counts bytes, and these records' values are ASCII;
+        // any others are skipped by their encoded length.
+        var start = i, bytes = parseInt(length, 10);
+        while (bytes > 0 && i < text.length) {
+            var code = text.charCodeAt(i++);
+            bytes -= code < 0x80 ? 1 : code < 0x800 ? 2 :
+                code >= 0xD800 && code < 0xDC00 ? (i++, 4) : 3;
+        }
+        var value = text.substring(start, i);
+        i++;
+        key = key.trim();
+        if (key === "STATEPOS")
+            position = parseInt(value, 10);
+        else if (key === "MOVE")
+            entries.push("move");
+        else if (key === "SOLVE")
+            entries.push("solve");
+        else if (key === "RESTART")
+            entries.push("restart");
+    }
+    return position !== null && position >= 2 ?
+        entries[position - 2] : null;
+}
+
+// The whole announcement for an action, from the boards before and
+// after it, or null if there's nothing to say. A move, undo or redo
+// says only what moved, adding "Solved." and the status text if the
+// game became solved. Any other action, and the redo of a solve or a
+// restart, says the action, the board's name, its layout and the
+// status text.
+function board_announcement(action, redid, puzzle, status, before, after,
+                            became_solved) {
+    var moved = board_moves(before, after);
+    var solved = became_solved ? board_joined(["Solved.", status]) : null;
+    var described = function(action) {
+        var layout = board_layout(after);
+        var wording = action === "new_game" ? "New game." :
+            action === "restart" ? "Restarted." :
+            action === "solve" ? "Solved by computer." : puzzle + ".";
+        var name = layout.cells.length === 0 ? puzzle + " board" :
+            puzzle + " board, " + layout.columns + " by " + layout.rows;
+        return board_joined([wording, name + ".", board_layout_text(layout),
+                             status]);
+    };
+    switch (action) {
+      case "move":
+        return moved === null ? null : board_joined([moved, solved]);
+      case "undo":
+        return board_joined(["Undo.", moved, solved]);
+      case "redo":
+        if (redid === "solve" || redid === "restart")
+            return board_joined(["Redo.", described(redid)]);
+        return board_joined(["Redo.", moved, solved]);
+      default:
+        return described(action);
+    }
+}
+
+// The non-empty parts, as one announcement.
+function board_joined(parts) {
+    return parts.filter(function(part) {
+        return part !== null && part !== "";
+    }).join(" ");
+}
+
+// "Row 1: 1, 2, 3, 4. Row 2: ...", each square by its label and the
+// space as "Empty", in reading order. Null for an empty layout.
+function board_layout_text(layout) {
+    var rows = [], i;
+    for (i = 0; i < layout.cells.length; i++) {
+        var cell = layout.cells[i];
+        if (rows.length === 0 || rows[rows.length - 1].row !== cell.row)
+            rows.push({ row: cell.row, labels: [] });
+        rows[rows.length - 1].labels.push(board_spoken_label(cell.element));
+    }
+    if (rows.length === 0)
+        return null;
+    return rows.map(function(row) {
+        return "Row " + row.row + ": " + row.labels.join(", ") + ".";
+    }).join(" ");
+}
+
+// "5", "5 and 6", "5, 6 and 7".
+function board_list(names) {
+    if (names.length < 2)
+        return names.length ? names[0] : "";
+    return names.slice(0, -1).join(", ") + " and " + names[names.length - 1];
+}
+
+// The tiles that moved between two published models, and which way:
+// "7 moved left.", "5, 6 and 7 moved left.", "5 and 6 moved." or
+// "14 tiles moved.". Null if no tile moved.
+function board_moves(before, after) {
+    var old = {}, moved = [], i;
+    var key = function(e) { return e.kind + " " + e.id; };
+    for (i = 0; i < before.length; i++)
+        if (before[i].kind === "tile" && !(key(before[i]) in old))
+            old[key(before[i])] = before[i].rect;
+    // after is in reading order.
+    for (i = 0; i < after.length; i++) {
+        var e = after[i], from = old[key(after[i])];
+        if (e.kind === "tile" && from &&
+            (from.x !== e.rect.x || from.y !== e.rect.y))
+            moved.push({ element: e, from: from });
+    }
+    if (moved.length === 0)
+        return null;
+    if (moved.length >= 4)
+        return moved.length + " tiles moved.";
+
+    var direction = function(m) {
+        var dx = m.element.rect.x - m.from.x, dy = m.element.rect.y - m.from.y;
+        return dy === 0 ? (dx < 0 ? "left" : "right") :
+            dx === 0 ? (dy < 0 ? "up" : "down") : null;
+    };
+    var way = direction(moved[0]), names;
+    var horizontal = way === "left" || way === "right";
+    var line = moved.every(function(m) {
+        return direction(m) === way && (horizontal ? m.from.y === moved[0].from.y :
+                                         m.from.x === moved[0].from.x);
+    });
+    if (way === null || !line) {
+        names = moved.map(function(m) { return board_spoken_label(m.element); });
+        return board_list(names) + " moved.";
+    }
+    // The leading tile first.
+    var lead = { left: function(r) { return r.x; },
+                 right: function(r) { return -r.x; },
+                 up: function(r) { return r.y; },
+                 down: function(r) { return -r.y; } }[way];
+    names = moved.slice().sort(function(a, b) {
+        return lead(a.element.rect) - lead(b.element.rect);
+    }).map(function(m) { return board_spoken_label(m.element); });
+    return board_list(names) + " moved " + way + ".";
+}
+
 // Set the font on a CanvasRenderingContext2d based on the CSS font
 // for the canvas, the requested size, and whether we want something
 // monospaced.
@@ -364,7 +1004,11 @@ function initPuzzle() {
         else if (event.ctrlKey)
             logbutton = 2;   // Ctrl-click overrides to right button
 
-        if (mousedown(xy.x, xy.y, logbutton))
+        board_announce_begin("move");
+        board_elements.press_result = null;
+        var used = mousedown(xy.x, xy.y, logbutton);
+        board_announce_end(used && !board_press_had_no_effect());
+        if (used)
             event.preventDefault();
         button_phys2log[event.button] = logbutton;
 
@@ -394,6 +1038,18 @@ function initPuzzle() {
         }
     };
 
+    // A press on a square of the accessible board is a left click at
+    // its centre, through the same entry points as the mouse. If it has
+    // no effect, that's announced.
+    board_square_press = function(x, y, square) {
+        board_announce_begin("move", square);
+        board_elements.press_result = null;
+        var used = mousedown(x, y, 0);
+        var no_effect = board_press_had_no_effect();
+        board_announce_end(used && !no_effect, no_effect);
+        mouseup(x, y, 0);
+    };
+
     // Set up keyboard handlers. We call event.preventDefault()
     // in the keydown handler if it looks like we might have
     // done something with the key.  This means that users
@@ -403,8 +1059,12 @@ function initPuzzle() {
     var key = Module.cwrap('key', 'boolean', ['number', 'string', 'string',
                                               'number', 'number', 'number']);
     onscreen_canvas.onkeydown = function(event) {
-        if (key(event.keyCode, event.key, event.char, event.location,
-                event.shiftKey ? 1 : 0, event.ctrlKey ? 1 : 0))
+        if (board_overlay !== null)
+            board_announce_begin(board_key_action(event));
+        var used = key(event.keyCode, event.key, event.char, event.location,
+                       event.shiftKey ? 1 : 0, event.ctrlKey ? 1 : 0);
+        board_announce_end(used);
+        if (used)
             event.preventDefault();
     };
 
@@ -413,6 +1073,12 @@ function initPuzzle() {
     // Mostly those are button presses, but there's also one for the
     // game-type dropdown having been changed.
     command = Module.cwrap('command', 'void', ['number']);
+    // The game commands, announced as the same keys are.
+    var game_command = function(n, action) {
+        board_announce_begin(action);
+        command(n);
+        board_announce_end(true);
+    };
 
     // Event handlers for buttons and things, which call command().
     if (specific_button) specific_button.onclick = function(event) {
@@ -428,23 +1094,23 @@ function initPuzzle() {
     };
     if (new_button) new_button.onclick = function(event) {
         if (dlg_dimmer === null)
-            command(5);
+            game_command(5, "new_game");
     };
     if (restart_button) restart_button.onclick = function(event) {
         if (dlg_dimmer === null)
-            command(6);
+            game_command(6, "restart");
     };
     if (undo_button) undo_button.onclick = function(event) {
         if (dlg_dimmer === null)
-            command(7);
+            game_command(7, "undo");
     };
     if (redo_button) redo_button.onclick = function(event) {
         if (dlg_dimmer === null)
-            command(8);
+            game_command(8, "redo");
     };
     if (solve_button) solve_button.onclick = function(event) {
         if (dlg_dimmer === null)
-            command(9);
+            game_command(9, "solve");
     };
     if (prefs_button) prefs_button.onclick = function(event) {
         if (dlg_dimmer === null)
@@ -455,6 +1121,12 @@ function initPuzzle() {
     var get_save_file = Module.cwrap('get_save_file', 'number', []);
     var free_save_file = Module.cwrap('free_save_file', 'void', ['number']);
     var load_game = Module.cwrap('load_game', 'void', []);
+    board_save_file = function() {
+        var savefile_ptr = get_save_file();
+        var savefile_text = UTF8ToString(savefile_ptr);
+        free_save_file(savefile_ptr);
+        return savefile_text;
+    };
 
     if (save_button) save_button.onclick = function(event) {
         if (dlg_dimmer === null) {
@@ -497,7 +1169,9 @@ function initPuzzle() {
                             pos += len;
                             return true;
                         }
+                        board_announce_begin("load");
                         load_game();
+                        board_announce_end(true);
                         savefile_read_callback = null;
                     });
                     reader.addEventListener("error", function() {
@@ -839,6 +1513,7 @@ function post_init() {
     var apology = document.getElementById("apology");
     if (apology !== null) apology.style.display = "none";
     document.getElementById("puzzle").style.display = "";
+    board_overlay_fit();
 
     // Default to giving keyboard focus to the puzzle.
     onscreen_canvas.focus();

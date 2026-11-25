@@ -339,6 +339,30 @@ mergeInto(LibraryManager.library, {
     },
 
     /*
+     * void js_element(int kind, int id, const char *label,
+     *                 int x, int y, int w, int h);
+     *
+     * Record a board element the puzzle is drawing (see
+     * draw_element() in devel.but). The C side declines to draw it,
+     * so the puzzle draws it as usual; we only keep the model.
+     */
+    js_element: function(kind, id, label, x, y, w, h) {
+        board_element_record(kind, id, label ? UTF8ToString(label) : null,
+                             x, y, w, h);
+    },
+
+    /*
+     * void js_end_draw_state(bool at_rest, int status);
+     *
+     * Called after every redraw. If the board is at rest (no move
+     * animation pending), publish the model of its board elements.
+     * status is the game's status: positive once it's solved.
+     */
+    js_end_draw_state: function(at_rest, status) {
+        board_elements_end_draw(at_rest, status);
+    },
+
+    /*
      * void js_canvas_draw_rect(drawing *dr,
      *                          int x, int y, int w, int h, int colour);
      * 
@@ -661,6 +685,7 @@ mergeInto(LibraryManager.library, {
         fe_scale = new_fe_scale;
         ctx.resetTransform();
         ctx.scale(fe_scale, fe_scale);
+        board_overlay_fit();
     },
 
     /*
@@ -804,6 +829,33 @@ mergeInto(LibraryManager.library, {
      */
     js_focus_canvas: function() {
         onscreen_canvas.focus();
+    },
+
+    /*
+     * void js_press_result(bool no_effect);
+     *
+     * Called after every mouse press on the puzzle, saying whether it
+     * was understood but had no effect (e.g. clicking a tile that
+     * can't move).
+     */
+    js_press_result: function(no_effect) {
+        board_elements.press_result = { no_effect: !!no_effect };
+    },
+
+    /*
+     * void js_puzzle_info(const char *name, bool can_solve,
+     *                     bool one_key_shortcuts);
+     *
+     * Describe the puzzle: its name, whether it can solve, and
+     * whether its keyboard shortcuts work without Ctrl. Called at
+     * startup and whenever the preferences change.
+     */
+    js_puzzle_info: function(name, can_solve, one_key_shortcuts) {
+        board_elements.puzzle = {
+            name: UTF8ToString(name),
+            can_solve: !!can_solve,
+            one_key_shortcuts: !!one_key_shortcuts
+        };
     },
 
     /*

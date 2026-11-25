@@ -68,6 +68,9 @@ extern void js_deactivate_timer(void);
 extern void js_canvas_start_draw(drawing *dr);
 extern void js_canvas_draw_update(drawing *dr, int x, int y, int w, int h);
 extern void js_canvas_end_draw(drawing *dr);
+extern void js_element(int kind, int id, const char *label,
+                       int x, int y, int w, int h);
+extern void js_end_draw_state(bool at_rest, int status);
 extern void js_canvas_draw_rect(drawing *dr,
                                 int x, int y, int w, int h, int colour);
 extern void js_canvas_clip(drawing *dr, int x, int y, int w, int h);
@@ -100,6 +103,9 @@ extern void js_dialog_boolean(int i, const char *title, bool initvalue);
 extern void js_dialog_launch(void);
 extern void js_dialog_cleanup(void);
 extern void js_focus_canvas(void);
+extern void js_press_result(bool no_effect);
+extern void js_puzzle_info(const char *name, bool can_solve,
+                           bool one_key_shortcuts);
 
 extern bool js_savefile_read(void *buf, int len);
 
@@ -312,17 +318,42 @@ static void post_move(void)
 }
 
 /*
+ * Tell JS about the puzzle, for describing it to assistive
+ * technology: its name, whether it can solve, and whether its
+ * keyboard shortcuts work without Ctrl. Called at startup and
+ * whenever the preferences change.
+ */
+static void puzzle_info(void)
+{
+    config_item *prefs;
+    char *title;
+    bool one_key_shortcuts = true;
+    int i;
+
+    prefs = midend_get_config(me, CFG_PREFS, &title);
+    sfree(title);
+    for (i = 0; prefs[i].type != C_END; i++)
+        if (!strcmp(prefs[i].kw, "one-key-shortcuts"))
+            one_key_shortcuts = prefs[i].u.boolean.bval;
+    free_cfg(prefs);
+
+    js_puzzle_info(thegame.name, thegame.can_solve, one_key_shortcuts);
+}
+
+/*
  * Mouse event handlers called from JS.
  */
 bool mousedown(int x, int y, int button)
 {
-    bool handled;
+    int result;
 
     button = (button == 0 ? LEFT_BUTTON :
               button == 1 ? MIDDLE_BUTTON : RIGHT_BUTTON);
-    handled = midend_process_key(me, x, y, button) != PKR_UNUSED;
+    result = midend_process_key(me, x, y, button);
     post_move();
-    return handled;
+    /* Tell JS whether the press did anything, so that it can say so. */
+    js_press_result(result == PKR_NO_EFFECT);
+    return result != PKR_UNUSED;
 }
 
 bool mouseup(int x, int y, int button)
@@ -544,6 +575,31 @@ static char *js_text_fallback(drawing *dr, const char *const *strings,
     return dupstr(strings[0]); /* Emscripten has no trouble with UTF-8 */
 }
 
+/*
+ * Board elements (see draw_element() in devel.but) are passed on to
+ * JS, which keeps a model of the board from them to present to
+ * assistive technology. We never draw them ourselves, so the puzzle
+ * draws them as it always has.
+ */
+static bool js_draw_element(drawing *dr, int kind, unsigned int flags,
+                            int id, const char *label,
+                            int x, int y, int w, int h, int colour)
+{
+    js_element(kind, id, label, x, y, w, h);
+    return false;
+}
+
+/*
+ * After each redraw, tell JS whether the board is at rest (no move
+ * animation pending, so its model of the board can be trusted) and
+ * what the game's status is.
+ */
+static void js_end_draw(drawing *dr)
+{
+    js_canvas_end_draw(dr);
+    js_end_draw_state(!midend_is_animating(me), midend_status(me));
+}
+
 static const struct drawing_api js_drawing = {
     1,
     js_draw_text,
@@ -559,7 +615,7 @@ static const struct drawing_api js_drawing = {
     js_canvas_clip,
     js_canvas_unclip,
     js_canvas_start_draw,
-    js_canvas_end_draw,
+    js_end_draw,
     js_canvas_status_bar,
     js_blitter_new,
     js_blitter_free,
@@ -569,6 +625,7 @@ static const struct drawing_api js_drawing = {
     NULL, NULL,			       /* line_width, line_dotted */
     js_text_fallback,
     js_draw_thick_line,
+    js_draw_element,
 };
 
 /* ----------------------------------------------------------------------
@@ -692,6 +749,7 @@ static void cfg_end(bool use_results)
              * Acceptable settings for user preferences: enact them
              * without blowing away the current game.
              */
+            puzzle_info();
             resize();
             midend_redraw(me);
             free_cfg(cfg);
@@ -991,6 +1049,7 @@ int main(int argc, char **argv)
      * canvas size appropriately.
      */
     midend_new_game(me);
+    puzzle_info();
     resize();
 
     /*

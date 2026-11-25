@@ -309,6 +309,46 @@ main {
     font-family: sans-serif;
 }
 
+.visually-hidden {
+    /* In the page for assistive technology, but not shown. */
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    border: 0;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+}
+
+#puzzleboard, #puzzleboard [role=row], #puzzleboard [role=cell],
+#puzzleboard button {
+    /* The accessible board, laid over the canvas. It shows nothing,
+     * and mouse and touch events pass through it to the canvas. */
+    position: absolute;
+    pointer-events: none;
+}
+
+#puzzleboard [role=row] {
+    /* A row spans the board; its top and height are set per row. */
+    left: 0;
+    width: 100%;
+}
+
+#puzzleboard button {
+    /* A square's button fills its cell. */
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: transparent;
+}
+
 #apology {
     padding: 0 1em 0 1em;
     margin: 1em;
