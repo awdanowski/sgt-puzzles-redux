@@ -122,6 +122,10 @@ typedef struct psdata psdata;
 #define ELEMENT_SPACE 2                /* an empty place for a tile */
 #define ELEMENT_TILE  3                /* a piece sitting on the board */
 
+/* Element state flags for draw_element(); never both at once */
+#define ELEMENT_FLASH     0x01         /* lit in a completion flash */
+#define ELEMENT_FLASH_ALT 0x02         /* a completion flash's other phase */
+
 /* For printing colours */
 #define HATCH_SLASH     1
 #define HATCH_BACKSLASH 2

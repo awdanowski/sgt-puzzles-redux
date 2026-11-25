@@ -2326,9 +2326,10 @@ Tells the front end that a \e{board element} is being drawn: a
 recognisable part of the puzzle such as the board itself, an empty
 space on it, or a tile. It says what the element is, which one it is,
 what it shows and where it is, and asks the front end to draw it in
-its own style. Returns \cw{true} if the front end drew the element,
-and \cw{false} if it did not, in which case nothing at all has been
-drawn and the back end must draw the element itself.
+its own style. Returns \cw{true} if the front end drew the whole
+element, including its label, and \cw{false} if it did not, in which
+case nothing at all has been drawn and the back end must draw the
+element itself, label and all.
 
 The main purpose of this function is accessibility. Pixels say
 nothing to a screen reader, but a front end which knows that the
@@ -2340,11 +2341,15 @@ element's kind, id and label, and the identity rules in
 second purpose is letting a front end draw elements in a style which
 matches its platform.
 
-So this function is always called with a fallback, in this form:
+So this function is always called with a fallback, and anything the
+back end draws on the element, such as the number on a tile, goes
+inside the fallback with it:
 
 \c if (!draw_element(dr, ELEMENT_TILE, 0, number, text,
-\c                   x, y, w, h, colour))
+\c                   x, y, w, h, colour)) {
 \c     draw_my_own_tile(dr, ...);
+\c     draw_text(dr, ..., text);
+\c }
 
 Front ends are not required to implement this function, and most do
 not; even one that does may decline to draw any particular element,
@@ -2366,8 +2371,25 @@ frame the back end would otherwise draw.
 
 \dd A piece which sits on the board.
 
-\c{flags} is a bitmask describing the element's state. No flags are
-defined yet, so it should always be 0.
+\c{flags} is a bitmask describing the element's state, or 0 if the
+element is at rest. The flags name states of the element, never
+colours: the front end decides how each state looks. They are:
+
+\dt \cw{ELEMENT_FLASH}
+
+\dd The element is lit in a completion flash.
+
+\dt \cw{ELEMENT_FLASH_ALT}
+
+\dd The element is in a completion flash's alternate phase, between
+lit frames.
+
+The two are never set together. A back end whose flash alternates
+between two looks passes \cw{ELEMENT_FLASH} on the lit frames and
+\cw{ELEMENT_FLASH_ALT} on the others; one whose flash has a single
+look passes only \cw{ELEMENT_FLASH}. A front end which ignores
+\cw{ELEMENT_FLASH_ALT} draws those frames at rest, and still shows a
+flash. Front ends ignore any flag they do not know.
 
 \c{id} is the back end's own number for this particular element (for
 example, the number on a tile), or 0 if it has none. Together with
@@ -2382,9 +2404,11 @@ is what the element shows, and never a sentence: it says nothing of
 the element's position, its kind or what can be done with it, which
 the front end works out for itself. It is plain text, in the same
 encoding as \cw{draw_text()}, and is valid only for the duration of
-the call, so a front end which wants to keep it must copy it. The
-label changes no pixels: the back end still draws any text on the
-element itself, whatever this function returns.
+the call, so a front end which wants to keep it must copy it. A front
+end which returns \cw{true} has drawn the label as part of the
+element, and the back end draws no text for it; one which returns
+\cw{false} leaves the back end to draw the element and its text, as
+it would without this function.
 
 \c{x}, \c{y}, \c{w} and \c{h} give the element's rectangle, which
 should be exactly the area the back end's own drawing of the element
@@ -2397,11 +2421,21 @@ blitters and \cw{draw_update()}.
 the element. Pass the colour you would really have used at that
 moment, such as a flash colour during a completion flash, because it
 can carry meaning. The front end chooses every other colour of the
-element (edges, highlights, shadows) itself.
+element (edges, highlights, shadows, its label) itself, and need not
+use this one at all.
 
-This function only draws the element. The back end still draws
-anything which appears on top of it (such as the number on a tile),
-and still calls \cw{draw_update()} for the area.
+When this function returns \cw{true}, the front end has drawn
+everything on the element, including its label, and the back end
+draws nothing more of it. The back end still draws anything which is
+not part of an element, and still calls \cw{draw_update()} for the
+area.
+
+A front end which returns \cw{true} owns every colour of that
+element, including its label: nothing of it is drawn in the back
+end's colours unless the front end chooses them. It should key those
+colours by the element's kind and state (its \c{flags}), rather than
+by the back end's colour index, and should let players change them,
+since colours which suit one player may be unreadable to another.
 
 This function is used for drawing only. Since no printing
 implementation provides it, back ends need not avoid calling it
@@ -3025,8 +3059,21 @@ for accessibility) whether or not it draws them.
 \c{label} is the short plain text a person would read off the
 element, such as \cw{"7"}, or \cw{NULL} if it shows nothing. It is
 never a sentence, and is valid only for the duration of the call, so
-a front end which keeps it must copy it. It changes no pixels: the
-back end draws the element's text itself.
+a front end which keeps it must copy it. A front end which returns
+\cw{true} has drawn the whole element, label included, and the back
+end draws no text for it; one which returns \cw{false} leaves the
+back end to draw the element and its text.
+
+\c{flags} names the element's state, never a colour:
+\cw{ELEMENT_FLASH} and \cw{ELEMENT_FLASH_ALT} are the two phases of
+a completion flash, and are never set together. A front end which
+ignores \cw{ELEMENT_FLASH_ALT} draws those frames at rest, and still
+shows a flash.
+
+A front end which returns \cw{true} owns every colour of that
+element, including its label. It should key those colours by the
+element's kind and state rather than by the back end's colour index,
+and should let players change them.
 
 This function is optional. An implementation of this API which does
 not want to draw board elements in its own style should define this

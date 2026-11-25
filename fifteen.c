@@ -973,21 +973,24 @@ static void fifteen_default_tile(drawing *dr, game_drawstate *ds,
 static void draw_tile(drawing *dr, game_drawstate *ds, const game_state *state,
                       int x, int y, int tile, int flash_colour)
 {
+    unsigned int flags = (flash_colour == COL_HIGHLIGHT ? ELEMENT_FLASH :
+                          flash_colour == COL_LOWLIGHT ? ELEMENT_FLASH_ALT : 0);
+
     if (tile == 0) {
-        if (!draw_element(dr, ELEMENT_SPACE, 0, 0, NULL,
+        if (!draw_element(dr, ELEMENT_SPACE, flags, 0, NULL,
                           x, y, TILE_SIZE, TILE_SIZE, flash_colour))
             fifteen_default_space(dr, ds, x, y, flash_colour);
     } else {
         char str[40];
 
         sprintf(str, "%d", tile);
-        if (!draw_element(dr, ELEMENT_TILE, 0, tile, str,
-                          x, y, TILE_SIZE, TILE_SIZE, flash_colour))
+        if (!draw_element(dr, ELEMENT_TILE, flags, tile, str,
+                          x, y, TILE_SIZE, TILE_SIZE, flash_colour)) {
             fifteen_default_tile(dr, ds, x, y, flash_colour);
-
-        draw_text(dr, x + TILE_SIZE/2, y + TILE_SIZE/2,
-                  FONT_VARIABLE, TILE_SIZE/3, ALIGN_VCENTRE | ALIGN_HCENTRE,
-                  COL_TEXT, str);
+            draw_text(dr, x + TILE_SIZE/2, y + TILE_SIZE/2,
+                      FONT_VARIABLE, TILE_SIZE/3, ALIGN_VCENTRE | ALIGN_HCENTRE,
+                      COL_TEXT, str);
+        }
     }
     draw_update(dr, x, y, TILE_SIZE, TILE_SIZE);
 }
