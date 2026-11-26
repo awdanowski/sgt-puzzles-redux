@@ -1230,12 +1230,12 @@ function board_element_edge(kind, body, flashing) {
     return null;
 }
 
-// The width of a Tile's border, for a Tile w by h: a twentieth of its
-// shorter side, as Fifteen's own bevel, and at least 1, so it grows
+// The width of a Tile's border, for a Tile w by h: a thirtieth of its
+// shorter side, and at least 1, so it grows
 // with the Tile when the board is zoomed. If that leaves no body, the
 // Tile has no border.
 function board_tile_border(w, h) {
-    var border = Math.max(1, Math.floor(Math.min(w, h) / 20));
+    var border = Math.max(1, Math.floor(Math.min(w, h) / 30));
     return Math.min(w, h) > 2 * border ? border : 0;
 }
 
