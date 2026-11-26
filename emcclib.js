@@ -644,7 +644,7 @@ mergeInto(LibraryManager.library, {
      * Set the text in the status bar.
      */
     js_canvas_status_bar: function(dr, ptr) {
-        statusbar.textContent = UTF8ToString(ptr);
+        board_zoom_status(UTF8ToString(ptr));
     },
 
     /*
@@ -664,18 +664,29 @@ mergeInto(LibraryManager.library, {
             setValue(hp, containing_div.clientHeight * dpr, "i32");
             return true;
         }
+        if (board_zoom.step === "fit") {
+            // Zoom to Fit: the area to fit, in device pixels and within
+            // the canvas cap, which isn't a user size.
+            var area = board_zoom_fit_device_area();
+            setValue(wp, area.width, "i32");
+            setValue(hp, area.height, "i32");
+        }
         return false;
     },
 
     /*
-     * void js_canvas_set_size(int w, int h, int fe_scale);
+     * bool js_canvas_set_size(int w, int h, int fe_scale, int tilesize);
      * 
      * Set the size of the puzzle canvas. Called whenever the size of
      * the canvas needs to change.  That might be because of a change
      * of configuration, because the user has resized the puzzle, or
-     * because the device pixel ratio has changed.
+     * because the device pixel ratio or the Board Zoom has changed.
+     * 'tilesize' is the mid end's tile size at the new size.
+     *
+     * Returns false if the browser couldn't allocate the canvas at
+     * that size, which it doesn't report by throwing.
      */
-    js_canvas_set_size: function(w, h, new_fe_scale) {
+    js_canvas_set_size: function(w, h, new_fe_scale, tilesize) {
         onscreen_canvas.width = w;
         offscreen_canvas.width = w;
         if (resizable_div !== null)
@@ -693,7 +704,76 @@ mergeInto(LibraryManager.library, {
         fe_scale = new_fe_scale;
         ctx.resetTransform();
         ctx.scale(fe_scale, fe_scale);
+        board_zoom.tilesize = tilesize;
         board_overlay_fit();
+        var allocated = board_zoom_allocated();
+        // A new grid or step can change which steps are available.
+        board_zoom_menu_update();
+        return allocated;
+    },
+
+    /*
+     * double js_get_board_zoom(void);
+     *
+     * Return the Board Zoom, as a scale on the puzzle's preferred tile
+     * size: 1 is 100%. In Zoom to Fit it's 0, and
+     * js_canvas_get_preferred_size gives the area to fit. After a
+     * probe, a step that's no longer available changes first.
+     */
+    js_get_board_zoom: function() {
+        return board_zoom_sizing_scale();
+    },
+
+    /*
+     * void js_board_zoom_fitted(double scale);
+     *
+     * Called in Zoom to Fit after sizing the board, with the fitted
+     * board's size as a scale on its size at 100%.
+     */
+    js_board_zoom_fitted: function(scale) {
+        board_zoom.fitted = scale;
+    },
+
+    /*
+     * bool js_board_zoom_probe_wanted(void);
+     *
+     * Called before sizing the board for Board Zoom. Returns true if
+     * the layout may have changed since the steps were last probed,
+     * so they must be probed again (js_board_zoom_probe_step and
+     * js_board_zoom_probed) before js_get_board_zoom.
+     */
+    js_board_zoom_probe_wanted: function() {
+        return board_zoom_probe_wanted();
+    },
+
+    /*
+     * double js_board_zoom_probe_step(int i);
+     *
+     * The i-th Board Zoom step to probe, as a scale on the puzzle's
+     * preferred tile size, or 0 when there are no more.
+     */
+    js_board_zoom_probe_step: function(i) {
+        return i < board_zoom_steps.length ? board_zoom_steps[i] / 100 : 0;
+    },
+
+    /*
+     * void js_board_zoom_probed(int i, int w, int h, int tilesize);
+     *
+     * The canvas size, and the tile size, in device pixels, that the
+     * i-th Board Zoom step would give.
+     */
+    js_board_zoom_probed: function(i, w, h, tilesize) {
+        board_zoom_probed(i, w, h, tilesize);
+    },
+
+    /*
+     * void js_board_zoom_allocation_failed(void);
+     *
+     * Called when the canvas couldn't be allocated at a Board Zoom
+     * step. JS switches to Zoom to Fit, and the board is sized again.
+     */
+    js_board_zoom_allocation_failed: function() {
+        board_zoom_allocation_failed();
     },
 
     /*

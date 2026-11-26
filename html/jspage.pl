@@ -121,6 +121,15 @@ main {
     border: 0;
 }
 
+#gamemenu li li[role=separator] {
+    /* A divider between groups of items in a submenu. */
+    width: auto;
+    height: 0;
+    margin: 0.2em 0;
+    border: 0;
+    border-top: 1px solid rgb(180,180,180);
+}
+
 /* The interactive contents of menu items are their child elements. */
 #gamemenu li > * {
     /* Line height and padding appropriate to top-level menu items */
@@ -138,6 +147,15 @@ main {
 #gamemenu li > .focus-within {
     /* When the mouse is over a menu item, highlight it */
     background: rgba(0,0,0,0.3);
+}
+
+#gamemenu label.disabled {
+    /* Grey out disabled radio items, which aren't highlighted */
+    color: rgba(0,0,0,0.5);
+}
+
+#gamemenu li > label.disabled:hover {
+    background: transparent;
 }
 
 \@media (max-width:18em) {
@@ -402,6 +420,14 @@ main {
     background: rgba(255,255,255,0.2);
 }
 
+:root[data-appearance=dark] #gamemenu label.disabled {
+    color: rgba(242,242,247,0.5);
+}
+
+:root[data-appearance=dark] #gamemenu li > label.disabled:hover {
+    background: transparent;
+}
+
 :root[data-appearance=dark] #gamemenu li > div:after {
     content: url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='10'%20height='10'%3E%3Cpolygon%20fill='%23f2f2f7'%20points='0,5,10,5,5,10'/%3E%3C/svg%3E");
 }
@@ -471,6 +497,28 @@ ${unfinishedpara}
         value="dark"> Dark</label></li>
     </ul></div></li>
     <li><button type="button" id="colours">Colours...</button></li>
+    <li role="separator"></li>
+    <li><button type="button" id="zoomin">Zoom In</button></li>
+    <li><button type="button" id="zoomout">Zoom Out</button></li>
+    <li role="separator"></li>
+    <li><label><input type="radio" class="tick" name="boardzoom"
+      value="fit"> Zoom to Fit</label></li>
+    <li><label><input type="radio" class="tick" name="boardzoom"
+      value="25"> 25%</label></li>
+    <li><label><input type="radio" class="tick" name="boardzoom"
+      value="50"> 50%</label></li>
+    <li><label><input type="radio" class="tick" name="boardzoom"
+      value="75"> 75%</label></li>
+    <li><label><input type="radio" class="tick" name="boardzoom"
+      value="100"> 100% (Actual Size)</label></li>
+    <li><label><input type="radio" class="tick" name="boardzoom"
+      value="150"> 150%</label></li>
+    <li><label><input type="radio" class="tick" name="boardzoom"
+      value="200"> 200%</label></li>
+    <li><label><input type="radio" class="tick" name="boardzoom"
+      value="300"> 300%</label></li>
+    <li><label><input type="radio" class="tick" name="boardzoom"
+      value="400"> 400%</label></li>
   </ul></div></li>
   <li role="separator"></li>
   <li><button type="button" id="new">
@@ -492,8 +540,8 @@ ${unfinishedpara}
   <div id="resizable">
   <canvas id="puzzlecanvas" tabindex="0"></canvas>
   <div id="statusbar"></div>
-  <svg id="resizehandle" aria-label="resize" width='10' height='10'>
-    <title>Drag to resize the puzzle. Right-click to restore the default size.</title>
+  <svg id="resizehandle" aria-label="Board Zoom" width='10' height='10'>
+    <title>Drag to zoom the board. Right-click for Actual Size.</title>
     <path d='M8.5,1.5l-7,7m7,-4l-4,4m4,-1l-1,1'
           stroke='currentColor' stroke-linecap='round'></path>
   </svg>

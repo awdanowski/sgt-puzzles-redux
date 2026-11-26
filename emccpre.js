@@ -176,6 +176,8 @@ var specific_button = document.getElementById("specific");
 var random_button = document.getElementById("random");
 var prefs_button = document.getElementById("prefs");
 var colours_button = document.getElementById("colours");
+var zoomin_button = document.getElementById("zoomin");
+var zoomout_button = document.getElementById("zoomout");
 var new_button = document.getElementById("new");
 var restart_button = document.getElementById("restart");
 var undo_button = document.getElementById("undo");
@@ -1491,6 +1493,488 @@ function board_style_init() {
         });
 }
 
+// Board Zoom (Spec 0010): the board's size as a step, a percentage of
+// the size the puzzle is drawn at by default, in CSS pixels, or Zoom to
+// Fit, the largest size that fits the window below the menu bar.
+// Browser zoom multiplies on top. resize() in emcc.c scales the
+// puzzle's preferred tile size by it, so only the canvas changes size.
+var board_zoom_steps = [25, 50, 75, 100, 150, 200, 300, 400];
+var board_zoom = {
+    // The current step, in percent, or "fit" for Zoom to Fit.
+    step: 100,
+    // In Zoom to Fit, the fitted board's size as a scale on its size at
+    // 100% (js_board_zoom_fitted).
+    fitted: 1,
+    // True while something, such as a drag of the resize handle, is
+    // sizing the board itself, so that Zoom to Fit doesn't refit.
+    holding: false,
+    // While the resize handle is being dragged, the board's scale on
+    // its size at 100%, which isn't a level; otherwise null.
+    drag: null,
+    // During a drag, the board's size at 100%, in CSS pixels.
+    drag_base: null,
+    // The mid end's tile size at the current size, in canvas pixels
+    // (js_canvas_set_size).
+    tilesize: 0,
+    // C's rescale_puzzle(), which sizes the board again.
+    rescale: null,
+    // What each step would give, from the last probe of the steps
+    // (js_board_zoom_probed): its canvas size in device pixels and
+    // its tile size in CSS pixels, by step. Empty until the first.
+    probed: {},
+    // The pixel ratio of the last probe.
+    probed_dpr: null,
+    // The number of probes so far, for tests.
+    probes: 0,
+    // True while the next sizing is for something that doesn't change
+    // the layout, such as choosing a step, so the last probe still
+    // holds.
+    reuse_probe: false,
+    // True between a probe and js_get_board_zoom.
+    just_probed: false,
+    // The status bar's text from the mid end, and the message that's
+    // shown instead when a canvas couldn't be allocated, or null.
+    status: "",
+    message: null
+};
+
+// The canvas cap: the largest canvas a browser will reliably draw,
+// in device pixels on each side and in area.
+var board_zoom_cap_side = 16384;
+var board_zoom_cap_area = 16777216;
+
+// Board Zoom belongs to one puzzle, so it's stored by page, as Custom
+// Colours are.
+function board_zoom_key() {
+    return location.pathname + " board zoom";
+}
+
+// Whether a level is one: a step or "fit".
+function board_zoom_valid(level) {
+    return level === "fit" || board_zoom_steps.indexOf(level) >= 0;
+}
+
+// A level as a radio item's value or the stored value has it.
+function board_zoom_parse(value) {
+    return value === "fit" ? "fit" : Number(value);
+}
+
+// The stored level, or 100% if there's none, it isn't a level, or
+// storage is unavailable.
+function board_zoom_load() {
+    var stored = board_setting_load(board_zoom_key());
+    var level = board_zoom_parse(stored);
+    board_zoom.step = (stored !== null && board_zoom_valid(level) ?
+                       level : 100);
+}
+
+// The scale resize() applies to the preferred tile size, or 0 in Zoom
+// to Fit, where it fits board_zoom_fit_area().
+function board_zoom_scale() {
+    if (board_zoom.drag !== null)
+        return board_zoom.drag;
+    return board_zoom.step === "fit" ? 0 : board_zoom.step / 100;
+}
+
+// Zoom to Fit's area, in CSS pixels: the window's width less the
+// page's side margins, and its height less the menu bar (with the space
+// below it) and the status bar. The headings above the menu bar don't
+// count. While the puzzle is still hidden, it's estimated from the
+// window, and post_init() fits again once it's shown.
+function board_zoom_fit_area() {
+    var root = document.documentElement;
+    var body = getComputedStyle(document.body);
+    var width = root.clientWidth - parseFloat(body.marginLeft) -
+        parseFloat(body.marginRight);
+    var height = root.clientHeight;
+    if (menuform !== null && menuform.offsetParent !== null) {
+        var menu = menuform.getBoundingClientRect();
+        var canvas = onscreen_canvas.getBoundingClientRect();
+        height -= canvas.top - menu.top;
+        if (statusbar !== null)
+            height -= statusbar.getBoundingClientRect().height;
+    }
+    return { width: Math.max(width, 1), height: Math.max(height, 1) };
+}
+
+// Zoom to Fit's area in device pixels, within the canvas cap, as
+// js_canvas_get_preferred_size gives it to the mid end.
+function board_zoom_fit_device_area() {
+    var area = board_zoom_fit_area();
+    var dpr = window.devicePixelRatio || 1;
+    var w = Math.min(Math.floor(area.width * dpr), board_zoom_cap_side);
+    var h = Math.min(Math.floor(area.height * dpr), board_zoom_cap_side);
+    if (w * h > board_zoom_cap_area) {
+        var shrink = Math.sqrt(board_zoom_cap_area / (w * h));
+        w = Math.floor(w * shrink);
+        h = Math.floor(h * shrink);
+    }
+    return { width: Math.max(w, 1), height: Math.max(h, 1) };
+}
+
+// Size the board again for its level, reusing the last probe of the
+// steps: for a change that leaves the layout as it was.
+function board_zoom_resize() {
+    board_zoom.reuse_probe = true;
+    try {
+        board_zoom.rescale();
+    } finally {
+        board_zoom.reuse_probe = false;
+    }
+}
+
+// When the window resizes: in Zoom to Fit, fit the board to it again,
+// unless something is holding its size. At a step, the step stays,
+// but which steps the tile rule allows may change.
+function board_zoom_refit() {
+    if (board_zoom.rescale === null)
+        return;
+    if (board_zoom.step === "fit" && !board_zoom.holding)
+        board_zoom_resize();
+    board_zoom_menu_update();
+}
+
+// After a change of layout that resize() can't see coming, such as
+// the puzzle being shown: size the board again with a new probe, so
+// that a step that's no longer available changes (Requirement 23).
+function board_zoom_relayout() {
+    if (board_zoom.rescale === null)
+        return;
+    board_zoom.rescale();
+    board_zoom_menu_update();
+}
+
+// Whether resize() must probe the steps again first: always, unless
+// the sizing is one that leaves the layout as it was and the pixel
+// ratio is the one last probed at.
+function board_zoom_probe_wanted() {
+    return !board_zoom.reuse_probe ||
+        board_zoom.probed_dpr !== (window.devicePixelRatio || 1);
+}
+
+// Record what step i would give (js_board_zoom_probed).
+function board_zoom_probed(i, w, h, tilesize) {
+    var dpr = window.devicePixelRatio || 1;
+    if (i === 0) {
+        board_zoom.probed = {};
+        board_zoom.probed_dpr = dpr;
+        board_zoom.probes++;
+    }
+    board_zoom.probed[board_zoom_steps[i]] =
+        { width: w, height: h, tile: tilesize / dpr };
+    board_zoom.just_probed = true;
+}
+
+// Whether a step is available: its canvas is within the canvas cap
+// (Requirement 22), and one tile fits in Zoom to Fit's area
+// (Requirement 25). A step not yet probed is available.
+function board_zoom_available(step) {
+    var probe = board_zoom.probed[step];
+    if (probe === undefined)
+        return true;
+    if (probe.width > board_zoom_cap_side ||
+        probe.height > board_zoom_cap_side ||
+        probe.width * probe.height > board_zoom_cap_area)
+        return false;
+    var area = board_zoom_fit_area();
+    return probe.tile <= area.width && probe.tile <= area.height;
+}
+
+// After a probe: a step that's no longer available changes to the
+// largest one that is, without asking, and that's stored instead
+// (Requirement 23). If no step is available, that's Zoom to Fit.
+function board_zoom_drop() {
+    if (board_zoom.step === "fit" || board_zoom_available(board_zoom.step))
+        return;
+    var level = "fit";
+    board_zoom_steps.forEach(function(step) {
+        if (board_zoom_available(step))
+            level = step;
+    });
+    board_zoom.step = level;
+    board_setting_save(board_zoom_key(), String(level));
+}
+
+// The scale js_get_board_zoom gives resize(), after dropping a step
+// that a probe has just found unavailable.
+function board_zoom_sizing_scale() {
+    if (board_zoom.just_probed) {
+        board_zoom.just_probed = false;
+        board_zoom_drop();
+    }
+    return board_zoom_scale();
+}
+
+// Whether the canvas, just sized, was allocated (Technical Decision
+// 8). Browsers don't throw when they can't: the 2D context is null, or
+// a pixel written at the far corner doesn't read back. A test can force
+// a failure with window.boardZoomTestFailAllocation, which nothing
+// else reads.
+function board_zoom_allocated() {
+    if (window.boardZoomTestFailAllocation === true)
+        return false;
+    var w = onscreen_canvas.width, h = onscreen_canvas.height;
+    if (w <= 0 || h <= 0)
+        return true;
+    var check = onscreen_canvas.getContext('2d', { alpha: false });
+    if (check === null || ctx === null)
+        return false;
+    try {
+        var pixel = ctx.createImageData(1, 1);
+        pixel.data.set([1, 2, 3, 255]);
+        ctx.putImageData(pixel, w - 1, h - 1);
+        var back = ctx.getImageData(w - 1, h - 1, 1, 1).data;
+        // The new canvas is blank, and the board's first draw after
+        // sizing covers it, but put the corner back as it was anyway.
+        pixel.data.set([0, 0, 0, 255]);
+        ctx.putImageData(pixel, w - 1, h - 1);
+        return back[0] === 1 && back[1] === 2 && back[2] === 3;
+    } catch (e) {
+        return false;
+    }
+}
+
+// The canvas couldn't be allocated at the current step: switch to
+// Zoom to Fit, and say so in the status bar (Requirement 24). The
+// board is then sized again.
+function board_zoom_allocation_failed() {
+    var step = board_zoom.drag !== null ? Math.round(board_zoom.drag * 100) :
+        board_zoom.step;
+    board_zoom.drag = null;
+    board_zoom.step = "fit";
+    board_setting_save(board_zoom_key(), "fit");
+    board_zoom_show_message(
+        "This board is too large to show at " + step + "%.");
+}
+
+// The status bar shows the mid end's text, or Board Zoom's message
+// while there is one.
+function board_zoom_status(text) {
+    board_zoom.status = text;
+    if (statusbar !== null && board_zoom.message === null)
+        statusbar.textContent = text;
+}
+
+function board_zoom_show_message(message) {
+    board_zoom.message = message;
+    if (statusbar !== null)
+        statusbar.textContent = message;
+}
+
+// Clear Board Zoom's message, on the next Board Zoom change or new
+// game.
+function board_zoom_clear_message() {
+    if (board_zoom.message === null)
+        return;
+    board_zoom.message = null;
+    if (statusbar !== null)
+        statusbar.textContent = board_zoom.status;
+}
+
+// The tile size in CSS pixels, as the tile rule compares it.
+function board_zoom_css_tilesize() {
+    return board_zoom.tilesize * fe_scale / (window.devicePixelRatio || 1);
+}
+
+// The point at the centre of the part of the board in the window, as
+// where it is in the window and as a fraction of the board's size, or
+// null if no part of the board is in the window.
+function board_zoom_anchor() {
+    var r = onscreen_canvas.getBoundingClientRect();
+    var root = document.documentElement;
+    var left = Math.max(r.left, 0), right = Math.min(r.right, root.clientWidth);
+    var top = Math.max(r.top, 0), bottom = Math.min(r.bottom, root.clientHeight);
+    if (right <= left || bottom <= top || r.width <= 0 || r.height <= 0)
+        return null;
+    var x = (left + right) / 2, y = (top + bottom) / 2;
+    return { x: x, y: y, fx: (x - r.left) / r.width, fy: (y - r.top) / r.height };
+}
+
+// Scroll the page so that the anchor's board point is back where it
+// was in the window, as far as the scroll range allows.
+function board_zoom_keep(anchor) {
+    if (anchor === null)
+        return;
+    var r = onscreen_canvas.getBoundingClientRect();
+    window.scrollBy(r.left + anchor.fx * r.width - anchor.x,
+                    r.top + anchor.fy * r.height - anchor.y);
+}
+
+// Show the current level in the View menu: its tick, the steps that
+// aren't available greyed out, and Zoom In and Zoom Out greyed out
+// when there's no step to go to. Zoom to Fit is never greyed out.
+function board_zoom_menu_update() {
+    var ticks = menuform.querySelectorAll("input[name='boardzoom']");
+    for (var i = 0; i < ticks.length; i++) {
+        var level = board_zoom_parse(ticks[i].value);
+        // While the handle is dragged, the size isn't a level.
+        ticks[i].checked = board_zoom.drag === null &&
+            level === board_zoom.step;
+        ticks[i].disabled = level !== "fit" && !board_zoom_available(level);
+        // Its label is greyed out with it.
+        ticks[i].parentNode.classList.toggle("disabled", ticks[i].disabled);
+    }
+    if (zoomin_button)
+        zoomin_button.disabled = board_zoom_next(1) === null;
+    if (zoomout_button)
+        zoomout_button.disabled = board_zoom_next(-1) === null;
+}
+
+// Choose a level: store it, size the board for it at once, and return
+// focus to the canvas. A step keeps the point at the centre of the
+// visible board in place; Zoom to Fit scrolls the menu bar to the top
+// of the window.
+function board_zoom_choose(level) {
+    if (!board_zoom_valid(level))
+        return;
+    var anchor = board_zoom_anchor();
+    onscreen_canvas.focus({ preventScroll: true });
+    board_zoom_clear_message();
+    board_zoom.step = level;
+    board_setting_save(board_zoom_key(), String(level));
+    board_zoom_resize();
+    if (level === "fit")
+        window.scrollTo(0, menuform.getBoundingClientRect().top +
+                        window.scrollY);
+    else
+        board_zoom_keep(anchor);
+    board_zoom_menu_update();
+}
+
+// The step Zoom In (direction 1) or Zoom Out (-1) goes to, or null if
+// there's none: the nearest available step strictly above or below the
+// current one, or from Zoom to Fit the fitted size.
+function board_zoom_next(direction) {
+    var from = board_zoom.step === "fit" ? board_zoom.fitted :
+        board_zoom.step / 100;
+    var found = null;
+    board_zoom_steps.forEach(function(step) {
+        if (direction * (step / 100 - from) > 0 &&
+            board_zoom_available(step) &&
+            (found === null || direction * (step - found) < 0))
+            found = step;
+    });
+    return found;
+}
+
+// The step nearest a scale by ratio, among the available steps, as a
+// pinch snaps on the Mac, or null if none is available.
+function board_zoom_nearest(scale) {
+    var found = null, best = Infinity;
+    board_zoom_steps.forEach(function(step) {
+        var d = Math.abs(Math.log(step / 100 / scale));
+        if (board_zoom_available(step) && d < best) {
+            found = step;
+            best = d;
+        }
+    });
+    return found;
+}
+
+// Whether the canvas as sized now is within the canvas cap.
+function board_zoom_within_cap() {
+    var w = onscreen_canvas.width, h = onscreen_canvas.height;
+    return w <= board_zoom_cap_side && h <= board_zoom_cap_side &&
+        w * h <= board_zoom_cap_area;
+}
+
+// Start a drag of the resize handle: the board's size is now the
+// drag's, which no radio item ticks, and Zoom to Fit doesn't refit.
+// Returns the board's current scale on its size at 100%, in CSS
+// pixels per CSS pixel at 100%.
+function board_zoom_drag_start() {
+    board_zoom_clear_message();
+    var probe = board_zoom.probed[100];
+    var dpr = window.devicePixelRatio || 1;
+    var base = probe !== undefined ?
+        { width: probe.width / dpr, height: probe.height / dpr } : null;
+    var scale = board_zoom.step === "fit" ? board_zoom.fitted :
+        board_zoom.step / 100;
+    if (base === null)
+        base = { width: onscreen_canvas.width / dpr / scale,
+                 height: onscreen_canvas.height / dpr / scale };
+    board_zoom.drag = scale;
+    board_zoom.drag_base = base;
+    board_zoom.holding = true;
+    board_zoom_menu_update();
+}
+
+// Size the board for a drag that wants it w by h CSS pixels: the
+// largest scale that fits them, from 25% up to the canvas cap, drawn
+// by the mid end at that scale (Technical Decision 3).
+function board_zoom_drag_to(w, h) {
+    if (board_zoom.drag === null)
+        return;
+    var base = board_zoom.drag_base;
+    var scale = Math.min(w / base.width, h / base.height);
+    // The canvas cap, estimated from the board's size at 100%. Its
+    // borders keep it from growing quite in proportion, so the canvas
+    // is checked once sized and shrunk until it's within the cap.
+    var dpr = window.devicePixelRatio || 1;
+    var bw = base.width * dpr, bh = base.height * dpr;
+    var cap = Math.min(board_zoom_cap_side / bw, board_zoom_cap_side / bh,
+                       Math.sqrt(board_zoom_cap_area / (bw * bh)));
+    scale = Math.max(Math.min(scale, cap), 0.25);
+    if (!isFinite(scale) || Math.abs(scale - board_zoom.drag) < 1e-4)
+        return;
+    board_zoom.drag = scale;
+    board_zoom_resize();
+    for (var i = 0; i < 8 && board_zoom.drag !== null &&
+         board_zoom.drag > 0.25 && !board_zoom_within_cap(); i++) {
+        board_zoom.drag = Math.max(board_zoom.drag * 0.98, 0.25);
+        board_zoom_resize();
+    }
+}
+
+// End a drag of the resize handle: snap to the nearest available
+// step, which is ticked and stored (Requirement 28).
+function board_zoom_drag_end() {
+    if (board_zoom.drag === null) {
+        board_zoom.holding = false;
+        return;
+    }
+    var step = board_zoom_nearest(board_zoom.drag);
+    board_zoom.drag = null;
+    board_zoom.holding = false;
+    if (step === null)
+        step = "fit";
+    board_zoom.step = step;
+    board_setting_save(board_zoom_key(), String(step));
+    board_zoom_resize();
+    board_zoom_menu_update();
+}
+
+// Right-click on the resize handle: 100% (Actual Size), as a step. If
+// the tile rule rules 100% out, the nearest available step instead.
+function board_zoom_actual_size() {
+    board_zoom_choose(board_zoom_available(100) ? 100 :
+                      (board_zoom_nearest(1) || "fit"));
+}
+
+// Set up the View menu's Board Zoom items. Called at startup, before
+// the board is first sized.
+function board_zoom_init() {
+    board_zoom.rescale = Module.cwrap('rescale_puzzle', 'void', []);
+    board_zoom_load();
+    var ticks = menuform.querySelectorAll("input[name='boardzoom']");
+    for (var i = 0; i < ticks.length; i++)
+        ticks[i].onclick = function(event) {
+            if (dlg_dimmer === null)
+                board_zoom_choose(board_zoom_parse(event.target.value));
+            else
+                board_zoom_menu_update();
+        };
+    [[zoomin_button, 1], [zoomout_button, -1]].forEach(function(pair) {
+        if (pair[0]) pair[0].onclick = function(event) {
+            var step = board_zoom_next(pair[1]);
+            if (dlg_dimmer === null && step !== null)
+                board_zoom_choose(step);
+        };
+    });
+    window.addEventListener("resize", board_zoom_refit);
+    board_zoom_menu_update();
+}
+
 // Set the font on a CanvasRenderingContext2d based on the CSS font
 // for the canvas, the requested size, and whether we want something
 // monospaced.
@@ -1699,8 +2183,16 @@ function initPuzzle() {
     // don't fall into other categories like mouse and key events.
     // Mostly those are button presses, but there's also one for the
     // game-type dropdown having been changed.
-    command = Module.cwrap('command', 'void', ['number']);
+    var puzzle_command = Module.cwrap('command', 'void', ['number']);
+    command = function(n) {
+        // A new game (New game, a Type, or OK in Custom..., Enter game
+        // ID... or Enter random seed...) clears Board Zoom's message.
+        if (n === 2 || n === 3 || n === 5)
+            board_zoom_clear_message();
+        puzzle_command(n);
+    };
     board_style_init();
+    board_zoom_init();
     // The game commands, announced as the same keys are.
     var game_command = function(n, action) {
         board_announce_begin(action);
@@ -1802,6 +2294,7 @@ function initPuzzle() {
                             return true;
                         }
                         board_announce_begin("load");
+                        board_zoom_clear_message();
                         load_game();
                         board_announce_end(true);
                         savefile_read_callback = null;
@@ -1819,9 +2312,14 @@ function initPuzzle() {
 
     // Find the next or previous item in a menu, or null if there
     // isn't one.  Skip list items that don't have a child (i.e.
-    // separators) or whose child is disabled.
+    // separators) or whose child is disabled, or is the label of a
+    // disabled radio item.
     function isuseful(item) {
-        return item.querySelector(":scope > :not(:disabled)");
+        var child = item.querySelector(":scope > :not(:disabled)");
+        if (child !== null && child.tagName === "LABEL" &&
+            child.querySelector(":scope > input:disabled") !== null)
+            return null;
+        return child;
     }
     function nextmenuitem(item) {
         do item = item.nextElementSibling;
@@ -2079,13 +2577,14 @@ function initPuzzle() {
                                        ['number','number']);
 
     if (resizable_div !== null) {
+        // The resize handle is part of Board Zoom (Spec 0010
+        // Requirement 21): dragging it zooms the board continuously,
+        // and it snaps to a step when let go. Right-clicking it gives
+        // 100%. Neither makes the size the mid end's preferred one, so
+        // 100% never drifts.
         var resize_handle = document.getElementById("resizehandle");
         var resize_xbase = null, resize_ybase = null, restore_pending = false;
         var resize_xoffset = null, resize_yoffset = null;
-        var resize_puzzle = Module.cwrap('resize_puzzle',
-                                         'void', ['number', 'number']);
-        var restore_puzzle_size = Module.cwrap('restore_puzzle_size',
-                                               'void', []);
         resize_handle.oncontextmenu = function(event) { return false; }
         resize_handle.onpointerdown = function(event) {
             resize_handle.setPointerCapture(event.pointerId);
@@ -2099,6 +2598,7 @@ function initPuzzle() {
                     xy.x + onscreen_canvas.offsetWidth - event.pageX;
                 resize_yoffset =
                     xy.y + onscreen_canvas.offsetHeight - event.pageY;
+                board_zoom_drag_start();
             } else {
                 restore_pending = true;
             }
@@ -2107,10 +2607,11 @@ function initPuzzle() {
         };
         window.addEventListener("mousemove", function(event) {
             if (resize_xbase !== null && resize_ybase !== null) {
-                var dpr = window.devicePixelRatio || 1;
-                resize_puzzle(
-                    (event.pageX + resize_xoffset - resize_xbase) * dpr * 2,
-                    (event.pageY + resize_yoffset - resize_ybase) * dpr);
+                // The board stays centred, so its width grows by twice
+                // the drag across.
+                board_zoom_drag_to(
+                    (event.pageX + resize_xoffset - resize_xbase) * 2,
+                    event.pageY + resize_yoffset - resize_ybase);
                 event.preventDefault();
                 // Chrome insists on selecting text during a resize drag
                 // no matter what I do
@@ -2123,6 +2624,7 @@ function initPuzzle() {
             if (resize_xbase !== null && resize_ybase !== null) {
                 resize_xbase = null;
                 resize_ybase = null;
+                board_zoom_drag_end();
                 onscreen_canvas.focus(); // return focus to the puzzle
                 event.preventDefault();
             } else if (restore_pending) {
@@ -2134,8 +2636,7 @@ function initPuzzle() {
                 // Gah.
                 setTimeout(function() {
                     restore_pending = false;
-                    restore_puzzle_size();
-                    onscreen_canvas.focus();
+                    board_zoom_actual_size();
                 }, 20);
                 event.preventDefault();
             }
@@ -2187,6 +2688,9 @@ function post_init() {
     var apology = document.getElementById("apology");
     if (apology !== null) apology.style.display = "none";
     document.getElementById("puzzle").style.display = "";
+    // Zoom to Fit and the tile rule could only estimate their area
+    // while the puzzle was hidden.
+    board_zoom_relayout();
     board_overlay_fit();
 
     // Default to giving keyboard focus to the puzzle.

@@ -93,8 +93,14 @@ extern void js_canvas_blitter_load(drawing *dr, blitter *bl, int x, int y);
 extern void js_canvas_remove_statusbar(void);
 extern void js_canvas_status_bar(drawing *dr, const char *text);
 extern bool js_canvas_get_preferred_size(int *wp, int *hp);
-extern void js_canvas_set_size(int w, int h, int fe_scale);
+extern bool js_canvas_set_size(int w, int h, int fe_scale, int tilesize);
 extern double js_get_device_pixel_ratio(void);
+extern double js_get_board_zoom(void);
+extern void js_board_zoom_fitted(double scale);
+extern bool js_board_zoom_probe_wanted(void);
+extern double js_board_zoom_probe_step(int i);
+extern void js_board_zoom_probed(int i, int w, int h, int tilesize);
+extern void js_board_zoom_allocation_failed(void);
 
 extern void js_dialog_init(const char *title);
 extern void js_dialog_string(int i, const char *title, const char *initvalue);
@@ -227,6 +233,34 @@ void timer_callback(double tplus)
 static int canvas_w, canvas_h;
 
 /*
+ * Zoom to Fit's bound on the scale of the puzzle's preferred tile
+ * size. It's far above any size that fits a window, so the area alone
+ * limits the board.
+ */
+#define BOARD_ZOOM_FIT_LIMIT 1000.0
+
+/*
+ * Board Zoom's step probe. The mid end only reports the tile size it
+ * has now, so size it at each step JS lists, as resize() would size
+ * it there, and report the canvas size and tile size to JS, which
+ * works out from them which steps are available. Sizing the mid end
+ * rebuilds its drawstate, so this is only called from resize(), just
+ * before it sizes the board for real.
+ */
+static void board_zoom_probe(int fe_scale, double dpr)
+{
+    int i;
+    double scale;
+
+    for (i = 0; (scale = js_board_zoom_probe_step(i)) > 0; i++) {
+        int w = INT_MAX, h = INT_MAX;
+        midend_size(me, &w, &h, false, dpr * scale);
+        js_board_zoom_probed(i, w * fe_scale, h * fe_scale,
+                             midend_tilesize(me) * fe_scale);
+    }
+}
+
+/*
  * Called when we resize as a result of changing puzzle settings
  * or device pixel ratio.
  *
@@ -238,11 +272,17 @@ static int canvas_w, canvas_h;
  * mid end about that so that it can use it to adjust the tile size
  * and achieve the correct overall scaling.
  */
-static void resize(void)
+/*
+ * Size the board once. Returns false if JS couldn't allocate the
+ * canvas at a Board Zoom step and has switched to Zoom to Fit, so
+ * that the board must be sized again.
+ */
+static bool resize_once(void)
 {
     int w, h, fe_scale = 1;
-    bool user;
-    double dpr;
+    int w100 = INT_MAX, h100 = INT_MAX;
+    bool user, allocated;
+    double dpr, zoom = 1;
 
     w = h = INT_MAX;
     user = js_canvas_get_preferred_size(&w, &h);
@@ -253,20 +293,67 @@ static void resize(void)
         w /= fe_scale;
         h /= fe_scale;
     }
+    if (!user) {
+        /*
+         * Board Zoom: at a step, scale the puzzle's own preferred
+         * tile size by the zoom JS asks for, in an area that never
+         * limits it. It isn't a user size, so the preferred tile size
+         * stays the puzzle's and 100% never drifts.
+         *
+         * After a change of layout, such as a new grid or pixel
+         * ratio, JS wants every step probed first, and may then
+         * change a step that's no longer available.
+         */
+        midend_reset_tilesize(me);
+        if (js_board_zoom_probe_wanted())
+            board_zoom_probe(fe_scale, dpr);
+        zoom = js_get_board_zoom();
+        if (zoom > 0) {
+            dpr *= zoom;
+        } else {
+            /*
+             * Zoom to Fit: JS has given the area to fit in w and h.
+             * Size the board at 100% first, to tell JS the fitted
+             * scale, then find the largest size that fits the area.
+             */
+            midend_size(me, &w100, &h100, false, dpr);
+            dpr *= BOARD_ZOOM_FIT_LIMIT;
+        }
+    }
     midend_size(me, &w, &h, user, dpr);
-    js_canvas_set_size(w * fe_scale, h * fe_scale, fe_scale);
+    if (zoom <= 0)
+        js_board_zoom_fitted(((double)w / w100 + (double)h / h100) / 2);
+    allocated = js_canvas_set_size(w * fe_scale, h * fe_scale, fe_scale,
+                                   midend_tilesize(me));
     canvas_w = w * fe_scale;
     canvas_h = h * fe_scale;
+    if (!allocated && !user && zoom > 0) {
+        js_board_zoom_allocation_failed();
+        return false;
+    }
+    return true;
 }
 
-/* Called from JS when the device pixel ratio changes */
+/* Size the board, and again at Zoom to Fit if a step couldn't be. */
+static void resize(void)
+{
+    if (!resize_once())
+        resize_once();
+}
+
+/* Called from JS when the device pixel ratio or the Board Zoom changes */
 void rescale_puzzle(void)
 {
     resize();
     midend_force_redraw(me);
 }
 
-/* Called from JS when the user uses the resize handle */
+/*
+ * Upstream's resize handle drag, which made the drag's size the mid
+ * end's preferred one. The handle is now part of Board Zoom, which
+ * sizes the board through resize(), so the page no longer calls this
+ * or restore_puzzle_size(); they stay for the export list.
+ */
 void resize_puzzle(int w, int h)
 {
     int fe_scale = 1;
@@ -281,14 +368,15 @@ void resize_puzzle(int w, int h)
     }
     midend_size(me, &w, &h, true, dpr);
     if (canvas_w != w || canvas_h != h) { 
-        js_canvas_set_size(w * fe_scale, h * fe_scale, fe_scale);
+        js_canvas_set_size(w * fe_scale, h * fe_scale, fe_scale,
+                           midend_tilesize(me));
         canvas_w = w * fe_scale;
         canvas_h = h * fe_scale;
         midend_force_redraw(me);
     }
 }
 
-/* Called from JS when the user uses the restore button */
+/* Upstream's restore from the resize handle (see resize_puzzle()) */
 void restore_puzzle_size(int w, int h)
 {
     midend_reset_tilesize(me);
