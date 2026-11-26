@@ -2036,7 +2036,38 @@ function initPuzzle() {
              Array.from(document.getElementsByClassName("focus-within")))
             if (!elem.contains(event.target))
                 elem.classList.remove("focus-within");
+        // Focus coming back into the menus lets them open again.
+        if (menuform.contains(event.target))
+            menuform.classList.remove("dismissed");
     }, true);
+
+    // Focus can also leave for nothing at all, as when clicking outside
+    // a menu puts it on the page body, and then no focus event follows
+    // to clear the classes. So after each blur, once focus has settled,
+    // clear them if it's on the body. (Clearing them during the blur
+    // would hide a submenu that focus is just moving into.)
+    document.documentElement.addEventListener("blur", function(event) {
+        setTimeout(function() {
+            var active = document.activeElement;
+            if (active !== null && active !== document.body)
+                return;
+            for (var elem of
+                 Array.from(document.getElementsByClassName("focus-within")))
+                elem.classList.remove("focus-within");
+        }, 0);
+    }, true);
+
+    // Choosing an item in a submenu closes the menus at once, even with
+    // the mouse still over them. They open on hover again once it has
+    // left the menu bar, or as soon as anything in them gains focus.
+    menuform.addEventListener("click", function(event) {
+        if (event.target.closest("li li") &&
+            event.target.closest("button, input"))
+            menuform.classList.add("dismissed");
+    });
+    menuform.addEventListener("mouseleave", function(event) {
+        menuform.classList.remove("dismissed");
+    });
 
     // Set up the function pointers we haven't already grabbed. 
     dlg_return_sval = Module.cwrap('dlg_return_sval', 'void',

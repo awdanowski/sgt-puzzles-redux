@@ -201,6 +201,13 @@ main {
     display: flex;
 }
 
+#gamemenu.dismissed :hover > ul,
+#gamemenu.dismissed .focus-within > ul {
+    /* Just after an item in a submenu is chosen, the menus close, even
+     * with the mouse still over them, until it leaves the menu bar. */
+    display: none;
+}
+
 #gamemenu button {
     /* Menu items that trigger an action.  We put some effort into
      * removing the default button styling. */
