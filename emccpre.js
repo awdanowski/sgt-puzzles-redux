@@ -1230,6 +1230,15 @@ function board_element_edge(kind, body, flashing) {
     return null;
 }
 
+// The width of a Tile's border, for a Tile w by h: a twentieth of its
+// shorter side, as Fifteen's own bevel, and at least 1, so it grows
+// with the Tile when the board is zoomed. If that leaves no body, the
+// Tile has no border.
+function board_tile_border(w, h) {
+    var border = Math.max(1, Math.floor(Math.min(w, h) / 20));
+    return Math.min(w, h) > 2 * border ? border : 0;
+}
+
 // Called for every board element the puzzle draws. Returns whether we
 // drew it.
 function board_element_draw(kind, flags, id, label, x, y, w, h, label_y) {
@@ -1243,13 +1252,23 @@ function board_element_draw(kind, flags, id, label, x, y, w, h, label_y) {
     var flash = element_flash_colour(flags);
     if (flash !== null)
         body = element_colour(flash);
+    // A Tile has a border in the Spaces colour, so Tiles of one colour
+    // don't run into each other. In a flash the Spaces flash with the
+    // Tile, so the border does too.
+    var bx = x, by = y, bw = w, bh = h;
+    if (element_kinds[kind] === "tile") {
+        var border = board_tile_border(w, h);
+        ctx.fillStyle = flash !== null ? body : element_colour("spaces");
+        ctx.fillRect(x, y, w, h);
+        bx += border; by += border; bw -= 2 * border; bh -= 2 * border;
+    }
     ctx.fillStyle = body;
-    ctx.fillRect(x, y, w, h);
+    ctx.fillRect(bx, by, bw, bh);
     var edge = board_element_edge(element_kinds[kind], body, flash !== null);
-    if (edge !== null && w > 2 && h > 2) {
+    if (edge !== null && bw > 2 && bh > 2) {
         ctx.strokeStyle = edge;
         ctx.lineWidth = 1;
-        ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+        ctx.strokeRect(bx + 0.5, by + 0.5, bw - 1, bh - 1);
     }
     if (label !== null) {
         // As draw_text() would with FONT_VARIABLE, a third of the
