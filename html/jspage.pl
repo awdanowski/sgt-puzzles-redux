@@ -453,6 +453,9 @@ ${unfinishedpara}
     <li><button type="button" id="save">Download save file...</button></li>
     <li><button type="button" id="load">Upload save file...</button></li>
     <li><button type="button" id="prefs">Preferences...</button></li>
+  </ul></div></li>
+  <li><div tabindex="0">Type<ul role="menu" id="gametype"></ul></div></li>
+  <li><div tabindex="0">View<ul>
     <li><div tabindex="0">Board style<ul role="menu" id="boardstyle">
       <li><label><input type="radio" class="tick" name="boardstyle"
         value="modern"> Modern</label></li>
@@ -469,7 +472,6 @@ ${unfinishedpara}
     </ul></div></li>
     <li><button type="button" id="colours">Colours...</button></li>
   </ul></div></li>
-  <li><div tabindex="0">Type<ul role="menu" id="gametype"></ul></div></li>
   <li role="separator"></li>
   <li><button type="button" id="new">
     New<span class="verbiage"> game</span>
