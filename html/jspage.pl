@@ -72,6 +72,7 @@ EOF
 <html>
 <head>
 <meta http-equiv="Content-Type" content="text/html; charset=ASCII" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>${puzzlename}, ${unfinishedtitlefragment}from Simon Tatham's Portable Puzzle Collection</title>
 <script defer type="text/javascript" src="${jspath}${filename}.js"></script>
 <style>
